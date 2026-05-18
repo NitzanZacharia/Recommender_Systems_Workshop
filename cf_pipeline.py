@@ -21,10 +21,54 @@ print(f"Rating matrix : {n_users} users × {n_beers} beers")
 
 
 # ─────────────────────────────────────────────
-# 2. NORMALISE  (remove per-user rating bias)
+# 2. SCALE NORMALISATION  (0–1)
+# ─────────────────────────────────────────────
+# Person 1's pipeline.py may hand us raw ratings on different scales
+# depending on whether they normalised before saving:
+#
+#   already [0, 1]  → dummy data, or a fixed pipeline.py
+#   raw [0, 20]     → pipeline.py without normalisation (overall column)
+#   raw [0, 10]     → aroma / taste columns
+#   raw [0, 5]      → appearance / palate columns
+#
+# We detect the scale from the observed max and divide accordingly,
+# so the CF pipeline is robust regardless of what we receive.
+# All subsequent steps (user-mean subtraction, SVD, clip) assume [0, 1].
+
+KNOWN_SCALES = [1.0, 5.0, 10.0, 20.0]   # only the denominators that exist in this dataset
+
+def _detect_scale(matrix: pd.DataFrame) -> float:
+    """
+    Return the scale factor to divide by so all values land in [0, 1].
+    Checks the global max of the matrix against known rating scales.
+    Returns 1.0 if the matrix already looks like [0, 1].
+    """
+    observed_max = matrix.max().max()   # ignores NaN automatically
+    if observed_max <= 1.0:
+        return 1.0                      # already normalised — nothing to do
+    for scale in sorted(KNOWN_SCALES):
+        if observed_max <= scale:
+            return scale
+    return observed_max                 # fallback: normalise by observed max
+
+scale = _detect_scale(rating_matrix)
+
+if scale != 1.0:
+    print(f"Scale detected  : raw ratings on [0, {scale:.0f}] — dividing to reach [0, 1]")
+    rating_matrix = rating_matrix / scale
+else:
+    print("Scale detected  : ratings already in [0, 1] — no rescaling needed")
+
+print(f"Rating range after scale fix: "
+      f"{rating_matrix.min().min():.3f} – {rating_matrix.max().max():.3f}")
+
+
+# ─────────────────────────────────────────────
+# 3. NORMALISE  (remove per-user rating bias)
 # ─────────────────────────────────────────────
 # Each user's mean is subtracted so a 0.8 from a generous rater and
 # a 0.8 from a harsh rater carry the same weight.
+# This step runs AFTER scale normalisation so means are always in [0, 1].
 user_means = rating_matrix.mean(axis=1)          # Series, shape (n_users,)
 
 rating_matrix_norm   = rating_matrix.sub(user_means, axis=0)
@@ -32,7 +76,7 @@ rating_matrix_filled = rating_matrix_norm.fillna(0)   # NaN → 0 ("no opinion")
 
 
 # ─────────────────────────────────────────────
-# 3. TRUNCATED SVD  →  U  and  V
+# 4. TRUNCATED SVD  →  U  and  V
 # ─────────────────────────────────────────────
 #
 # SVD factorises the matrix R into three matrices:
@@ -89,7 +133,7 @@ print(V_df.iloc[:3, :5].round(4))
 
 
 # ─────────────────────────────────────────────
-# 4. RECONSTRUCT PREDICTED RATINGS
+# 5. RECONSTRUCT PREDICTED RATINGS
 # ─────────────────────────────────────────────
 # Predicted rating = dot product of user vector and beer vector,
 # then add back the user's mean rating to undo the normalisation.
@@ -114,7 +158,7 @@ print(predicted_df.iloc[:4, :5].round(3))
 
 
 # ─────────────────────────────────────────────
-# 5. CF RECOMMEND
+# 6. CF RECOMMEND
 # ─────────────────────────────────────────────
 
 def cf_recommend(user_id: str, n: int = 10) -> pd.Series:
@@ -160,7 +204,7 @@ print(f"\nOverlap with already-rated beers: {len(overlap)}  (should be 0)")
 
 
 # ─────────────────────────────────────────────
-# 6. OPTIONAL — TUNE k  (plot RMSE vs k)
+# 7. OPTIONAL — TUNE k  (plot RMSE vs k)
 # ─────────────────────────────────────────────
 # Run this block to find the best number of latent factors.
 # Uses only rated cells (not the filled zeros) to measure true error.
