@@ -112,17 +112,34 @@ numeric_features = [
     "total_reviews_count",
 ]
 
-required_columns = [
+required_item_columns = [
     "beer_id",
     "beer_name",
     "beer_style",
     text_feature,
 ] + numeric_features
 
-missing_cols = [col for col in required_columns if col not in item_profiles.columns]
+required_train_columns = [
+    "username",
+    "beer_id",
+    "rating_overall",
+]
 
-if missing_cols:
-    raise ValueError(f"Missing required columns in item_profiles: {missing_cols}")
+missing_item_cols = [
+    col for col in required_item_columns
+    if col not in item_profiles.columns
+]
+
+missing_train_cols = [
+    col for col in required_train_columns
+    if col not in train_df.columns
+]
+
+if missing_item_cols:
+    raise ValueError(f"Missing required columns in item_profiles: {missing_item_cols}")
+
+if missing_train_cols:
+    raise ValueError(f"Missing required columns in train_df: {missing_train_cols}")
 
 item_profiles[text_feature] = item_profiles[text_feature].fillna("")
 item_profiles["beer_style"] = item_profiles["beer_style"].fillna("unknown")
@@ -178,13 +195,32 @@ preprocessor = ColumnTransformer(
 beer_feature_matrix = preprocessor.fit_transform(item_profiles)
 
 beer_ids = item_profiles["beer_id"].values
-beer_id_to_index = {beer_id: idx for idx, beer_id in enumerate(beer_ids)}
+beer_id_to_index = {
+    beer_id: idx
+    for idx, beer_id in enumerate(beer_ids)
+}
 
 print(f"Beer feature matrix: {beer_feature_matrix.shape}")
 
 
 # ─────────────────────────────────────────────
-# 5. SIMILAR BEERS
+# 5. HELPER FUNCTION: SAFE MATRIX TO ARRAY
+# ─────────────────────────────────────────────
+
+def to_dense_array(matrix):
+    """
+    Converts sparse or dense matrix to a normal NumPy array.
+    Works for both real data and demo data.
+    """
+
+    if hasattr(matrix, "toarray"):
+        return matrix.toarray()
+
+    return np.asarray(matrix)
+
+
+# ─────────────────────────────────────────────
+# 6. SIMILAR BEERS
 # ─────────────────────────────────────────────
 
 def similar_beers(beer_id, n: int = 10) -> pd.Series:
@@ -210,8 +246,10 @@ def similar_beers(beer_id, n: int = 10) -> pd.Series:
 
     ranked_indices = np.argsort(similarities)[::-1]
 
-    # remove the beer itself
-    ranked_indices = [idx for idx in ranked_indices if idx != beer_idx]
+    ranked_indices = [
+        idx for idx in ranked_indices
+        if idx != beer_idx
+    ]
 
     top_indices = ranked_indices[:n]
 
@@ -223,7 +261,7 @@ def similar_beers(beer_id, n: int = 10) -> pd.Series:
 
 
 # ─────────────────────────────────────────────
-# 6. BUILD USER TASTE PROFILE
+# 7. BUILD USER TASTE PROFILE
 # ─────────────────────────────────────────────
 
 def build_user_profile(user_id: str):
@@ -234,12 +272,16 @@ def build_user_profile(user_id: str):
     Ratings are normalized from 1–5 scale to 0–1 scale.
     """
 
-    user_reviews = train_df[train_df["username"] == user_id].copy()
+    user_reviews = train_df[
+        train_df["username"] == user_id
+    ].copy()
 
     if user_reviews.empty:
         raise ValueError(f"User '{user_id}' not found in train data.")
 
-    user_reviews = user_reviews[user_reviews["beer_id"].isin(beer_id_to_index)]
+    user_reviews = user_reviews[
+        user_reviews["beer_id"].isin(beer_id_to_index)
+    ]
 
     if user_reviews.empty:
         raise ValueError(
@@ -248,23 +290,23 @@ def build_user_profile(user_id: str):
 
     beer_indices = user_reviews["beer_id"].map(beer_id_to_index).values
 
-    # Real pipeline ratings are normalized to 1–5 scale.
     ratings = user_reviews["rating_overall"].astype(float).values
     ratings = np.clip(ratings / 5.0, 0.0, 1.0)
 
-    weights = ratings.reshape(-1, 1)
     user_beer_vectors = beer_feature_matrix[beer_indices]
+    user_beer_vectors = to_dense_array(user_beer_vectors)
 
-    # Weighted average of content vectors
-    user_profile = np.asarray(
-        user_beer_vectors.multiply(weights).mean(axis=0)
-    )
+    user_profile = np.average(
+        user_beer_vectors,
+        axis=0,
+        weights=ratings,
+    ).reshape(1, -1)
 
     return user_profile
 
 
 # ─────────────────────────────────────────────
-# 7. CONTENT-BASED RECOMMEND
+# 8. CONTENT-BASED RECOMMEND
 # ─────────────────────────────────────────────
 
 def cb_recommend(user_id: str, n: int = 10) -> pd.Series:
@@ -300,7 +342,10 @@ def cb_recommend(user_id: str, n: int = 10) -> pd.Series:
     candidate_scores = similarities[candidate_indices]
 
     top_order = np.argsort(candidate_scores)[::-1][:n]
-    top_indices = [candidate_indices[i] for i in top_order]
+    top_indices = [
+        candidate_indices[i]
+        for i in top_order
+    ]
 
     return pd.Series(
         similarities[top_indices],
@@ -310,7 +355,7 @@ def cb_recommend(user_id: str, n: int = 10) -> pd.Series:
 
 
 # ─────────────────────────────────────────────
-# 8. OPTIONAL: DISPLAY RESULTS WITH METADATA
+# 9. OPTIONAL: DISPLAY RESULTS WITH METADATA
 # ─────────────────────────────────────────────
 
 def get_recommendation_details(scores: pd.Series) -> pd.DataFrame:
@@ -341,7 +386,7 @@ def get_recommendation_details(scores: pd.Series) -> pd.DataFrame:
 
 
 # ─────────────────────────────────────────────
-# 9. QUICK SANITY TEST
+# 10. QUICK SANITY TEST
 # ─────────────────────────────────────────────
 
 if __name__ == "__main__":
