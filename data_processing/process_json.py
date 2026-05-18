@@ -19,6 +19,11 @@ DB_PARAMS = {
 
 BATCH_SIZE = 1000
 
+# Minimum activity thresholds for filtered_reviews.
+# Raise these if the full dataset is very large.
+MIN_USER_REVIEWS = 5
+MIN_BEER_REVIEWS = 5
+
 # ==========================================
 # HELPER FUNCTIONS
 # ==========================================
@@ -69,6 +74,58 @@ def create_database_schema(cursor):
         );
     """)
 
+
+# ==========================================
+# FIX 2 — CREATE filtered_reviews
+# ==========================================
+def create_filtered_reviews(cursor, conn):
+    """
+    Creates (or replaces) the filtered_reviews view used by analyze.py
+    and pipeline.py.
+
+    Keeps only users and beers that meet the minimum activity thresholds
+    so the downstream EDA and model training work on a dense-enough
+    sub-matrix.
+
+    Called once, after all ingestion is complete.
+    """
+    print(f"\nBuilding filtered_reviews "
+          f"(min {MIN_USER_REVIEWS} reviews/user, "
+          f"min {MIN_BEER_REVIEWS} reviews/beer)...")
+
+    cursor.execute(f"""
+        CREATE OR REPLACE VIEW filtered_reviews AS
+        SELECT r.*
+        FROM reviews r
+        -- keep only active users
+        INNER JOIN (
+            SELECT username
+            FROM reviews
+            GROUP BY username
+            HAVING COUNT(*) >= {MIN_USER_REVIEWS}
+        ) active_users USING (username)
+        -- keep only well-reviewed beers
+        INNER JOIN (
+            SELECT beer_id
+            FROM reviews
+            GROUP BY beer_id
+            HAVING COUNT(*) >= {MIN_BEER_REVIEWS}
+        ) active_beers USING (beer_id);
+    """)
+    conn.commit()
+
+    # Report how many rows survived the filter
+    cursor.execute("SELECT COUNT(*) FROM filtered_reviews;")
+    n_rows = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(DISTINCT username) FROM filtered_reviews;")
+    n_users = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(DISTINCT beer_id) FROM filtered_reviews;")
+    n_beers = cursor.fetchone()[0]
+
+    print(f"  filtered_reviews created: "
+          f"{n_rows:,} rows | {n_users:,} users | {n_beers:,} beers")
+
+
 # ==========================================
 # PHASE 1: MAIN INGESTION & ERROR LOGGING
 # ==========================================
@@ -81,7 +138,7 @@ def process_main_file(path, file_label, cursor, conn):
     batch_reviews = []
     
     good_row_count = 0          
-    bad_row_count = 0
+    bad_row_count = 0           # FIX 1 — was split into bad_count/bad_row_count below
     physical_line_count = 0 
     
     with open(path, 'r', encoding='utf-8') as f, open(log_file_path, 'a', encoding='utf-8') as log_file:
@@ -97,7 +154,7 @@ def process_main_file(path, file_label, cursor, conn):
             
             if '\x00' in line:
                 log_file.write(f"[{file_label}] Line {physical_line_count} | Error: Contains NUL (0x00) | Data: {line}\n")
-                bad_count += 1
+                bad_row_count += 1   # FIX 1 — was `bad_count += 1`, which crashed (NameError)
                 continue
                 
             try:
@@ -186,11 +243,11 @@ def execute_batch_insert(cursor, conn, batch_users, batch_beers, batch_reviews):
 # PHASE 2: ERROR RECOVERY & INJECTION
 # ==========================================
 def process_bad_rows_log(cursor, conn):
-    """Parses the generated error log, applies specialized regex/string mending, and forces ingestion."""
-    print("\n--- [Phase 2] מתחיל לחלץ ולתקן נתונים מקובץ הלוג ---")
+    """Parses the generated error log, applies specialized string mending, and forces ingestion."""
+    print("\n--- [Phase 2] Starting recovery of malformed rows from log file ---")
     
     if not os.path.exists(log_file_path) or os.path.getsize(log_file_path) == 0:
-        print("קובץ הלוג ריק או לא קיים. אין שורות פגומות לתיקון.")
+        print("Log file is empty or does not exist. No bad rows to recover.")
         return
 
     batch_users = set()
@@ -210,7 +267,7 @@ def process_bad_rows_log(cursor, conn):
                 
                 username = row.get('review/profileName').replace('\x00', '') if row.get('review/profileName') else None
                 
-                # תיקון מזהה בירה משובש (פיצול מקפים)
+                # Attempt to fix a malformed beer ID (e.g. '1234-5' → 5)
                 raw_beer_id = row.get('beer/beerId')
                 if not raw_beer_id:
                     beer_id = None
@@ -264,7 +321,7 @@ def process_bad_rows_log(cursor, conn):
 
     if batch_reviews:
         try:
-            print(f"נאספו {recovered_count:,} שורות משובשות שתוקנו בהצלחה! מזריק ל-DB...")
+            print(f"Recovered {recovered_count:,} malformed rows — injecting into DB...")
             cursor.executemany("INSERT INTO users (username) VALUES (%s) ON CONFLICT (username) DO NOTHING", [(u,) for u in batch_users])
             cursor.executemany("INSERT INTO beers (beer_id, beer_name, brewer_id, beer_abv, beer_style) VALUES (%s, %s, %s, %s, %s) ON CONFLICT (beer_id) DO NOTHING", [(k, v[0], v[1], v[2], v[3]) for k, v in batch_beers.items()])
             cursor.executemany("""
@@ -285,10 +342,10 @@ def process_bad_rows_log(cursor, conn):
                     END
             """, batch_reviews)
             conn.commit()
-            print("מבצע חילוץ והצלה הסתיים בהצלחה!")
+            print("[Phase 2] Recovery complete.")
         except Exception as db_e:
             conn.rollback()
-            print(f"שגיאת Database בזמן הזרקת התיקונים מהלוג: {db_e}")
+            print(f"[Phase 2] Database error during recovery insert: {db_e}")
 
 # ==========================================
 # MAIN ROUTINE
@@ -306,6 +363,10 @@ if __name__ == "__main__":
     process_main_file(file_path_2, "File 2 (RateBeer)", cursor, conn)
     
     process_bad_rows_log(cursor, conn)
+
+    # FIX 2 — build filtered_reviews AFTER all ingestion is done
+    # analyze.py and pipeline.py both query this view and will crash without it.
+    create_filtered_reviews(cursor, conn)
     
     cursor.close()
     conn.close()
