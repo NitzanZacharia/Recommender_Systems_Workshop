@@ -3,16 +3,24 @@ cb_pipeline.py
 
 Content-Based recommendation pipeline for beer recommendations.
 
-This recommends beers based on beer features, not similar users.
-
-Uses:
-- item_profiles_for_cold_start_enriched.csv
-- train_set_enriched.csv
+This recommends beers based on beer features:
+- beer style
+- ABV
+- average ratings
+- review text
+- review count
 
 Main functions:
 - cb_recommend(user_id, n=10)
 - similar_beers(beer_id, n=10)
+
+Output format matches cf_pipeline.py:
+- pd.Series
+- index = beer_id
+- values = recommendation score
 """
+
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -24,21 +32,70 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 
 # ─────────────────────────────────────────────
-# 1. LOAD DATA
+# 1. PATHS
 # ─────────────────────────────────────────────
 
-ITEM_PROFILES_PATH = "item_profiles_for_cold_start_enriched.csv"
-TRAIN_PATH = "train_set_enriched.csv"
+BASE_DIR = Path(__file__).resolve().parent
 
-item_profiles = pd.read_csv(ITEM_PROFILES_PATH)
-train_df = pd.read_csv(TRAIN_PATH)
+ITEM_PROFILES_PATH = BASE_DIR / "item_profiles_for_cold_start_enriched.csv"
+TRAIN_PATH = BASE_DIR / "train_set_enriched.csv"
+
+
+# ─────────────────────────────────────────────
+# 2. LOAD DATA OR CREATE DEMO DATA
+# ─────────────────────────────────────────────
+
+def make_demo_data():
+    """
+    Small fallback dataset so this file can run before the real CSVs exist.
+    Remove/ignore this once real CSV files are committed.
+    """
+
+    item_profiles_demo = pd.DataFrame({
+        "beer_id": ["beer_0001", "beer_0002", "beer_0003", "beer_0004", "beer_0005"],
+        "beer_name": ["Hoppy IPA", "Dark Stout", "Light Lager", "Sour Ale", "Citrus IPA"],
+        "brewer_id": [1, 2, 3, 4, 5],
+        "beer_style": ["IPA", "Stout", "Lager", "Sour", "IPA"],
+        "beer_abv": [6.5, 8.0, 4.8, 5.2, 6.8],
+        "avg_overall_rating": [4.3, 4.1, 3.5, 3.9, 4.4],
+        "avg_taste_rating": [4.4, 4.2, 3.4, 4.0, 4.5],
+        "avg_aroma_rating": [4.5, 4.0, 3.2, 4.1, 4.6],
+        "avg_appearance_rating": [4.0, 4.3, 3.5, 3.8, 4.1],
+        "avg_palate_rating": [4.2, 4.1, 3.3, 3.9, 4.4],
+        "avg_review_word_count": [80, 95, 40, 70, 85],
+        "total_reviews_count": [120, 100, 60, 75, 130],
+        "all_reviews_text": [
+            "hoppy bitter citrus tropical grapefruit ipa",
+            "dark roasted chocolate coffee stout rich",
+            "light crisp clean refreshing lager easy drink",
+            "sour tart funky acidic fruity ale",
+            "citrus hoppy juicy bitter tropical ipa"
+        ],
+    })
+
+    train_demo = pd.DataFrame({
+        "username": ["user_0001", "user_0001", "user_0002", "user_0002"],
+        "beer_id": ["beer_0001", "beer_0003", "beer_0002", "beer_0004"],
+        "rating_overall": [5.0, 3.0, 4.5, 3.5],
+    })
+
+    return item_profiles_demo, train_demo
+
+
+if ITEM_PROFILES_PATH.exists() and TRAIN_PATH.exists():
+    item_profiles = pd.read_csv(ITEM_PROFILES_PATH)
+    train_df = pd.read_csv(TRAIN_PATH)
+    print("Loaded real CSV files.")
+else:
+    item_profiles, train_df = make_demo_data()
+    print("WARNING: Real CSV files not found. Running with demo data.")
 
 print(f"Item profiles loaded: {item_profiles.shape}")
 print(f"Train data loaded:    {train_df.shape}")
 
 
 # ─────────────────────────────────────────────
-# 2. CLEAN / PREPARE FEATURES
+# 3. CLEAN / PREPARE FEATURES
 # ─────────────────────────────────────────────
 
 text_feature = "all_reviews_text"
@@ -55,22 +112,42 @@ numeric_features = [
     "total_reviews_count",
 ]
 
+required_columns = [
+    "beer_id",
+    "beer_name",
+    "beer_style",
+    text_feature,
+] + numeric_features
+
+missing_cols = [col for col in required_columns if col not in item_profiles.columns]
+
+if missing_cols:
+    raise ValueError(f"Missing required columns in item_profiles: {missing_cols}")
+
 item_profiles[text_feature] = item_profiles[text_feature].fillna("")
 item_profiles["beer_style"] = item_profiles["beer_style"].fillna("unknown")
 
 for col in numeric_features:
     item_profiles[col] = pd.to_numeric(item_profiles[col], errors="coerce")
 
-item_profiles["beer_abv"] = item_profiles["beer_abv"].fillna(
-    item_profiles["beer_abv"].median()
-)
+if item_profiles["beer_abv"].notna().any():
+    item_profiles["beer_abv"] = item_profiles["beer_abv"].fillna(
+        item_profiles["beer_abv"].median()
+    )
+else:
+    item_profiles["beer_abv"] = item_profiles["beer_abv"].fillna(0)
 
 for col in numeric_features:
     item_profiles[col] = item_profiles[col].fillna(0)
 
+train_df["rating_overall"] = pd.to_numeric(
+    train_df["rating_overall"],
+    errors="coerce"
+).fillna(0)
+
 
 # ─────────────────────────────────────────────
-# 3. BUILD BEER FEATURE MATRIX
+# 4. BUILD BEER FEATURE MATRIX
 # ─────────────────────────────────────────────
 
 preprocessor = ColumnTransformer(
@@ -88,9 +165,9 @@ preprocessor = ColumnTransformer(
         (
             "text",
             TfidfVectorizer(
-                max_features=5000,
+                max_features=2000,
                 stop_words="english",
-                min_df=2,
+                min_df=1,
             ),
             text_feature,
         ),
@@ -107,12 +184,18 @@ print(f"Beer feature matrix: {beer_feature_matrix.shape}")
 
 
 # ─────────────────────────────────────────────
-# 4. SIMILAR BEERS
+# 5. SIMILAR BEERS
 # ─────────────────────────────────────────────
 
-def similar_beers(beer_id, n: int = 10) -> pd.DataFrame:
+def similar_beers(beer_id, n: int = 10) -> pd.Series:
     """
     Return top-N beers most similar to a given beer.
+
+    Returns
+    -------
+    pd.Series
+        index = beer_id
+        values = content similarity score
     """
 
     if beer_id not in beer_id_to_index:
@@ -127,36 +210,28 @@ def similar_beers(beer_id, n: int = 10) -> pd.DataFrame:
 
     ranked_indices = np.argsort(similarities)[::-1]
 
-    # Remove the beer itself
+    # remove the beer itself
     ranked_indices = [idx for idx in ranked_indices if idx != beer_idx]
 
     top_indices = ranked_indices[:n]
 
-    results = item_profiles.iloc[top_indices][
-        [
-            "beer_id",
-            "beer_name",
-            "beer_style",
-            "beer_abv",
-            "avg_overall_rating",
-            "total_reviews_count",
-        ]
-    ].copy()
-
-    results["cb_score"] = similarities[top_indices]
-
-    return results.sort_values("cb_score", ascending=False)
+    return pd.Series(
+        similarities[top_indices],
+        index=item_profiles.iloc[top_indices]["beer_id"].values,
+        name="cb_score",
+    ).sort_values(ascending=False)
 
 
 # ─────────────────────────────────────────────
-# 5. BUILD USER TASTE PROFILE
+# 6. BUILD USER TASTE PROFILE
 # ─────────────────────────────────────────────
 
 def build_user_profile(user_id: str):
     """
     Build a user profile vector from beers the user rated.
 
-    Beers with higher rating_overall influence the profile more.
+    Higher rating_overall means stronger influence.
+    Ratings are normalized from 1–5 scale to 0–1 scale.
     """
 
     user_reviews = train_df[train_df["username"] == user_id].copy()
@@ -172,17 +247,15 @@ def build_user_profile(user_id: str):
         )
 
     beer_indices = user_reviews["beer_id"].map(beer_id_to_index).values
-    ratings = user_reviews["rating_overall"].astype(float).values
 
-    # Normalize ratings to [0, 1] if needed
-    if ratings.max() > 1:
-        ratings = ratings / ratings.max()
+    # Real pipeline ratings are normalized to 1–5 scale.
+    ratings = user_reviews["rating_overall"].astype(float).values
+    ratings = np.clip(ratings / 5.0, 0.0, 1.0)
 
     weights = ratings.reshape(-1, 1)
-
     user_beer_vectors = beer_feature_matrix[beer_indices]
 
-    # Weighted average of beer feature vectors
+    # Weighted average of content vectors
     user_profile = np.asarray(
         user_beer_vectors.multiply(weights).mean(axis=0)
     )
@@ -191,18 +264,17 @@ def build_user_profile(user_id: str):
 
 
 # ─────────────────────────────────────────────
-# 6. CB RECOMMEND
+# 7. CONTENT-BASED RECOMMEND
 # ─────────────────────────────────────────────
 
-def cb_recommend(user_id: str, n: int = 10) -> pd.DataFrame:
+def cb_recommend(user_id: str, n: int = 10) -> pd.Series:
     """
     Return top-N content-based beer recommendations for a user.
 
-    Strategy:
-    1. Build user taste profile from beers they rated in train set.
-    2. Compare profile to every beer using cosine similarity.
-    3. Remove beers already rated by the user.
-    4. Return the highest-scoring beers.
+    Output matches cf_recommend style:
+    pd.Series where:
+        index = beer_id
+        values = cb_score
     """
 
     user_profile = build_user_profile(user_id)
@@ -222,11 +294,37 @@ def cb_recommend(user_id: str, n: int = 10) -> pd.DataFrame:
         if beer_id not in already_rated
     ]
 
+    if not candidate_indices:
+        return pd.Series(dtype=float, name="cb_score")
+
     candidate_scores = similarities[candidate_indices]
+
     top_order = np.argsort(candidate_scores)[::-1][:n]
     top_indices = [candidate_indices[i] for i in top_order]
 
-    results = item_profiles.iloc[top_indices][
+    return pd.Series(
+        similarities[top_indices],
+        index=item_profiles.iloc[top_indices]["beer_id"].values,
+        name="cb_score",
+    ).sort_values(ascending=False)
+
+
+# ─────────────────────────────────────────────
+# 8. OPTIONAL: DISPLAY RESULTS WITH METADATA
+# ─────────────────────────────────────────────
+
+def get_recommendation_details(scores: pd.Series) -> pd.DataFrame:
+    """
+    Convert recommendation scores into a readable table with beer metadata.
+    Useful for debugging and GUI display.
+    """
+
+    if scores.empty:
+        return pd.DataFrame()
+
+    details = item_profiles[
+        item_profiles["beer_id"].isin(scores.index)
+    ][
         [
             "beer_id",
             "beer_name",
@@ -237,22 +335,30 @@ def cb_recommend(user_id: str, n: int = 10) -> pd.DataFrame:
         ]
     ].copy()
 
-    results["cb_score"] = similarities[top_indices]
+    details["cb_score"] = details["beer_id"].map(scores)
 
-    return results.sort_values("cb_score", ascending=False)
+    return details.sort_values("cb_score", ascending=False)
 
 
 # ─────────────────────────────────────────────
-# 7. QUICK SANITY TEST
+# 9. QUICK SANITY TEST
 # ─────────────────────────────────────────────
 
 if __name__ == "__main__":
     sample_user = train_df["username"].iloc[0]
 
     print(f"\nTop-10 CB recommendations for user: {sample_user}")
-    print(cb_recommend(sample_user, n=10))
+    rec_scores = cb_recommend(sample_user, n=10)
+    print(rec_scores.round(3))
+
+    print("\nReadable recommendation table:")
+    print(get_recommendation_details(rec_scores).round(3))
 
     sample_beer = item_profiles["beer_id"].iloc[0]
 
     print(f"\nTop-10 beers similar to beer_id={sample_beer}")
-    print(similar_beers(sample_beer, n=10))
+    similar_scores = similar_beers(sample_beer, n=10)
+    print(similar_scores.round(3))
+
+    print("\nReadable similar beers table:")
+    print(get_recommendation_details(similar_scores).round(3))
