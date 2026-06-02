@@ -5,9 +5,9 @@ import os
 # ==========================================
 # CENTRAL CONFIGURATION
 # ==========================================
-file_path_1 = r'C:\Users\nitza\OneDrive\Documents\RecSys\beeradvocate.json'
-file_path_2 = r'C:\Users\nitza\OneDrive\Documents\RecSys\ratebeer.json'
-log_file_path = r'C:\Users\nitza\OneDrive\Documents\RecSys\bad_rows_log.txt'
+file_path_1 = r'C:\Users\nitza\RecSys\beeradvocate.json'
+file_path_2 = r'C:\Users\nitza\RecSys\ratebeer.json'
+log_file_path = r'C:\Users\nitza\RecSys\bad_rows_log.txt'
 
 DB_PARAMS = {
     "dbname": "recommend_db",

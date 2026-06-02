@@ -3,18 +3,33 @@ cf_pipeline.py
 Build the User (U) and Item (V) latent factor matrices from the rating matrix
 using truncated SVD, then use them to power cf_recommend().
 """
-
+from pathlib import Path
 import numpy as np
 import pandas as pd
 from scipy.sparse import csr_matrix
 from scipy.sparse.linalg import svds
 from dummy_data import make_rating_matrix
 
-
 # ─────────────────────────────────────────────
-# 1. LOAD DUMMY DATA
+# 1.1 LOAD DATA
 # ─────────────────────────────────────────────
-rating_matrix = make_rating_matrix()        # shape: (n_users, n_beers)
+BASE_DIR = Path(__file__).resolve().parent
+TRAIN_PATH = BASE_DIR / "train_set_enriched.csv"
+if TRAIN_PATH.exists():
+    print("Loaded real CSV file for CF pipeline.")
+    train_df = pd.read_csv(TRAIN_PATH)
+    
+    # Convert flat dataframe into a 2D rating matrix
+    # Using pivot_table handles any accidental duplicate user-beer ratings by averaging them
+    rating_matrix = train_df.pivot_table(
+        index="username", 
+        columns="beer_id", 
+        values="rating_overall", 
+        aggfunc="mean"
+    )
+else:
+    print("WARNING: Real CSV files not found. Running with dummy data.")
+    rating_matrix = make_rating_matrix()        # shape: (n_users, n_beers)
 
 n_users, n_beers = rating_matrix.shape
 print(f"Rating matrix : {n_users} users × {n_beers} beers")
