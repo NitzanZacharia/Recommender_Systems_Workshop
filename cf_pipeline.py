@@ -4,6 +4,8 @@ Build the User (U) and Item (V) latent factor matrices from the rating matrix
 using truncated SVD, then use them to power cf_recommend().
 """
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 from scipy.sparse import csr_matrix
@@ -11,10 +13,22 @@ from scipy.sparse.linalg import svds
 from dummy_data import make_rating_matrix
 
 
+BASE_DIR = Path(__file__).resolve().parent
+TRAIN_PATH = BASE_DIR / "train_set_enriched.csv"
+
+
 # ─────────────────────────────────────────────
-# 1. LOAD DUMMY DATA
+# 1. LOAD DATA
 # ─────────────────────────────────────────────
-rating_matrix = make_rating_matrix()        # shape: (n_users, n_beers)
+if TRAIN_PATH.exists():
+    train_df = pd.read_csv(TRAIN_PATH)
+    rating_matrix = train_df.pivot(
+        index="username", columns="beer_id", values="rating_overall"
+    )
+    print("Real CSV file loaded.")
+else:
+    rating_matrix = make_rating_matrix()        # shape: (n_users, n_beers)
+    print("Running with demo data.")
 
 n_users, n_beers = rating_matrix.shape
 print(f"Rating matrix : {n_users} users × {n_beers} beers")
