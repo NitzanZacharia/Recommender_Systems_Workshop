@@ -14,8 +14,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 QUIZ_DATA_PATH = Path(__file__).resolve().parent.parent / "quiz_data.json"
 STANDARD_CF_WEIGHT = 0.6
 STANDARD_LAMBDA = 0.25
-CANDIDATE_NUM = 50
-HYBRID_CANDIDATE_NUM = 25
+HYBRID_MULTIPLIER = 3
+RERANK_MULTIPLIER = 2
 FINAL_RECOMMENDATION_NUM = 10
 
 app = FastAPI()
@@ -25,32 +25,69 @@ async def root():
     return {"message": "You shouldn't be here ;)"}
     
 @app.get("/recommendations/{user_id}")
-async def get_recommendation(user_id):
+async def get_recommendation(user_id: str, rec_num: int = FINAL_RECOMMENDATION_NUM):
     """
     Return a list of recommended beers tailored to the given user
 
     Parameters:
-    - user_id: string id of the users we want recommendations for
+    - user_id: String id of the users we want recommendations for
+    - rec_num: Number of wanted recommendations. Optional
 
     Returns:
     - List of ids of recommended beers for the user
-    - List of scores
+    - List of scores for the beers
     """
 
-    # Get recommendation candidates for the user
-    cb_candidates = cb.cb_recommend(user_id, CANDIDATE_NUM)
-    cf_candidates = cf.cf_recommend(user_id, CANDIDATE_NUM)
-
-    # Get the best candidates based on the hybrid scores
-    hybrid_candidates = hybridize_candidates(cf_candidates, cb_candidates, HYBRID_CANDIDATE_NUM)
+    hybrid_candidates = get_user_rec_candidates(user_id, rec_num * RERANK_MULTIPLIER)
 
     # Further refine our recommendations while using reranking to introduce diversity
-    selected_recommendations = rerank_recommendations(hybrid_candidates, FINAL_RECOMMENDATION_NUM)
+    selected_recommendations = rerank_recommendations(hybrid_candidates, rec_num)
 
     return {
             "recommended_ids:": selected_recommendations.index.tolist(),
             "scores": selected_recommendations.values.tolist()
         }
+
+@app.get("/group")
+async def get_group_recommend(group = ""):
+    """
+    Returns a list of recommended beers for a given group
+    
+    Parameters:
+    - group: Comma-separated string of user IDs (e.g., "user_1,user_2,user_3")
+             
+    Returns:
+    - pd.Series: Beer IDs as index, final penalized group scores as values,
+                 sorted in descending order.
+    """
+    # Parse the comma-separated string into a clean list of user IDs
+    user_ids = [user_id.strip() for user_id in group.split(",")]
+    
+    if not user_ids:
+        return pd.Series(dtype=float)
+        
+    # 2. Fetch recommendations for all users and collect them in a dictionary
+    # Assuming get_recommendations(user_id) returns a pd.Series
+    user_recommendations = {}
+    for user_id in user_ids:
+        user_recommendations[user_id] = get_recommendations(user_id)
+        
+    # 3. Combine individual series into a single DataFrame
+    # Columns will be user IDs, Rows (Index) will be beer IDs.
+    # Beers not recommended to a specific user will naturally default to NaN.
+    df = pd.DataFrame(user_recommendations)
+    
+    # 4. Fill NaNs with 0 under the assumption that if a system didn't 
+    # recommend a beer to a user, that user's predicted score for it is 0.
+    df = df.fillna(0.0)
+    
+    # 5. Calculate row-wise (per-beer) average and variance across the users
+    beer_means = df.mean(axis=1)
+    beer_variances = df.var(axis=1, ddof=0) # ddof=0 calculates population variance
+    
+    # 6. Apply the variance penalty formula
+    group_scores = beer_means - (alpha * beer_variances)
+    return {}
 
 @app.get("/quiz")
 async def get_quiz():
@@ -95,6 +132,8 @@ def hybridize_candidates(cf_scores: pd.Series, cb_scores: pd.Series, candidate_n
     # cull bottom candidates after hybridizing scores
     return hybridized.nlargest(candidate_num)
 
+
+
 def hybrid_scores(cf_scores: pd.Series, cb_scores: pd.Series, cf_weight: int) -> pd.Series:
     """
     Creates a weighted average of CF and CB scores
@@ -111,6 +150,26 @@ def hybrid_scores(cf_scores: pd.Series, cb_scores: pd.Series, cf_weight: int) ->
     """
     return (cf_weight * cf_scores).add((1 - cf_weight) * cb_scores, fill_value = 0)
 
+def get_user_rec_candidates(user_id: str, candidate_num: int) -> pd.Series:
+    """
+    Return a series of hybrid recommendation candidates
+
+    Parameters:
+    - user_id: string id of the user we want recommendations for
+    - candidate_num: The number of candidates we want to return
+
+    Returns:
+    - Series of recommendation candidates with hybrid CF/CB scores
+    """
+    # Get extra recommendation candidates from the 2 pipelines
+    expanded_candidate_num = HYBRID_MULTIPLIER * candidate_num
+    cb_candidates = cb.cb_recommend(user_id, expanded_candidate_num)
+    cf_candidates = cf.cf_recommend(user_id, expanded_candidate_num)
+
+    # Narrow down the best candidates based on the hybrid scores
+    hybrid_candidates = hybridize_candidates(cf_candidates, cb_candidates, candidate_num)
+
+    return hybrid_candidates
 
 def rerank_recommendations(candidates: pd.Series, rec_num: int, diversity_weight: float = STANDARD_LAMBDA):
     """
