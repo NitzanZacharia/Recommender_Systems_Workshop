@@ -50,10 +50,19 @@ async def root():
 
 @app.get("/users/sample")
 async def get_sample_users(n: int = 5):
-    """Return user IDs that are valid in both CF and CB pipelines."""
+    """Return user IDs that are valid in both pipelines and have enough ratings."""
     cb_users = set(cb.train_df["username"].unique())
-    valid = [uid for uid in cf.user_ids if uid in cb_users]
-    return {"user_ids": valid[:n]}
+    MIN_RATINGS = 50
+    valid = []
+    for uid in cf.user_ids:
+        if uid not in cb_users:
+            continue
+        idx = cf.user_id_to_index[uid]
+        if cf.R_sparse.getrow(idx).nnz >= MIN_RATINGS:
+            valid.append(uid)
+        if len(valid) >= n:
+            break
+    return {"user_ids": valid}
 
 
 @app.get("/recommendations/group")
