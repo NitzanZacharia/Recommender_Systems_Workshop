@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import './Dashboard.css';
 import logo from '../assets/logo.png';
-import { getRecommendations, getBeerDetails, getSimilarBeers, submitRating, getSampleUsers, getTopBeers } from '../services/apiService';
+import { getRecommendations, getBeerDetails, getSimilarBeers, submitRating, getSampleUsers, getTopBeers, getAdventurousRecommendations } from '../services/apiService';
 
 const fallbackImage = (name) =>
   `https://placehold.co/200x300/1a1a2e/e67e22?text=${encodeURIComponent(name || 'Beer')}`;
@@ -38,7 +38,8 @@ const Navbar = ({ onLogout, activeTab, setActiveTab, isDemoMode, setIsDemoMode }
         <button className={`nav-link ${activeTab === 'discover' ? 'active' : ''}`} onClick={() => setActiveTab('discover')}>Discover</button>
         <button className="nav-link">Shared With Me</button>
         <button className={`nav-link ${activeTab === 'top50' ? 'active' : ''}`} onClick={() => setActiveTab('top50')}>Top 50</button>
-        
+        <button className={`nav-link ${activeTab === 'adventurous' ? 'active' : ''}`} onClick={() => setActiveTab('adventurous')}>Adventurous</button>
+
         {/* NEW: Demo Toggle Switch */}
         <div className="demo-toggle-container">
           <span className={`demo-label ${isDemoMode ? 'active' : ''}`}>Demo Data</span>
@@ -555,6 +556,92 @@ const TopBeersPage = ({ onCardClick, favorites, onToggleFav }) => {
   );
 };
 
+// Feeling Adventurous Page Component
+const AdventurousPage = ({ userId, onCardClick, favorites, onToggleFav }) => {
+  const [beers, setBeers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  const fetchAdventurous = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const { recommended_ids, scores } = await getAdventurousRecommendations(userId, 10);
+      const details = await Promise.all(
+        recommended_ids.map((id) => getBeerDetails(id))
+      );
+      setBeers(details.map((beer, i) => ({
+        id: beer.beer_id,
+        name: beer.beer_name,
+        style: beer.beer_style,
+        abv: beer.beer_abv,
+        match_score: scores[i],
+        rating: beer.avg_overall_rating,
+        image_url: fallbackImage(beer.beer_name),
+      })));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (userId) fetchAdventurous();
+  }, [userId]);
+
+  if (!userId) return (
+    <div className="empty-state">
+      <h2>Switch to Live Mode</h2>
+      <p>Adventurous picks require live recommendations. Toggle off "Demo Data" first.</p>
+    </div>
+  );
+
+  if (loading) return (
+    <div className="empty-state">
+      <h2>Finding your next adventure...</h2>
+    </div>
+  );
+
+  if (error) return (
+    <div className="empty-state">
+      <h2>Could not load adventurous picks</h2>
+      <p style={{ color: '#ff4d4d' }}>{error}</p>
+    </div>
+  );
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+        <div>
+          <h2 className="page-title" style={{ marginBottom: '0.3rem' }}>Feeling Adventurous?</h2>
+          <p style={{ color: '#aaa', margin: 0 }}>
+            These picks diverge from your usual taste — step outside your comfort zone!
+          </p>
+        </div>
+        <button
+          className="submit-review-btn"
+          style={{ width: 'auto', padding: '0.6rem 1.5rem', whiteSpace: 'nowrap' }}
+          onClick={fetchAdventurous}
+        >
+          Surprise Me Again
+        </button>
+      </div>
+      <div className="favorites-grid">
+        {beers.map((beer) => (
+          <BeerCard
+            key={beer.id}
+            beer={beer}
+            onCardClick={onCardClick}
+            isFav={favorites.includes(beer.id)}
+            onToggleFav={onToggleFav}
+          />
+        ))}
+      </div>
+    </div>
+  );
+};
+
 // 3. Main Dashboard Component
 const RecommenderDashboard = ({ data, onLogout }) => {
   const [selectedBeer, setSelectedBeer] = useState(null);
@@ -739,6 +826,15 @@ useEffect(() => {
 
         {activeTab === 'top50' && (
           <TopBeersPage
+            onCardClick={(beer) => setSelectedBeer(beer)}
+            favorites={favorites}
+            onToggleFav={toggleFavorite}
+          />
+        )}
+
+        {activeTab === 'adventurous' && (
+          <AdventurousPage
+            userId={liveUserId}
             onCardClick={(beer) => setSelectedBeer(beer)}
             favorites={favorites}
             onToggleFav={toggleFavorite}
