@@ -58,6 +58,11 @@ export async function getTopBeers(n = 50) {
   return request(`/beers/top?n=${n}`);
 }
 
+// GET /recommendations/{userId}/adventurous?rec_num={n}
+export async function getAdventurousRecommendations(userId, recNum = 10) {
+  return request(`/recommendations/${encodeURIComponent(userId)}/adventurous?rec_num=${recNum}`);
+}
+
 // POST /ratings
 export async function submitRating(userId, beerId, rating) {
   return request('/ratings', {

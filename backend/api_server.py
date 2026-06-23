@@ -115,6 +115,35 @@ async def get_recommendation(user_id: str, rec_num: int = DEFAULT_RECOMMENDATION
             "scores": selected_recommendations.values.tolist()
         }
 
+@app.get("/recommendations/{user_id}/adventurous")
+async def get_adventurous_recommendations(user_id: str, rec_num: int = DEFAULT_RECOMMENDATION_NUM):
+    """Return beers from the mid-range of a user's predicted scores — adventurous picks
+    that diverge from the user's core taste profile."""
+    try:
+        # Get a large pool of candidates (top 200) so we can skip the best matches
+        large_pool = get_user_rec_candidates(user_id, 200)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    # Skip the top matches (first 50) and pick from the mid-range (positions 50-150)
+    skip = min(50, len(large_pool) - rec_num)
+    if skip < 0:
+        skip = 0
+    mid_range = large_pool.iloc[skip:]
+
+    # Sample randomly from the mid-range for variety
+    sample_size = min(rec_num, len(mid_range))
+    if sample_size == 0:
+        return {"recommended_ids": [], "scores": []}
+
+    sampled = mid_range.sample(n=sample_size)
+    sampled = sampled.sort_values(ascending=False)
+
+    return {
+        "recommended_ids": sampled.index.tolist(),
+        "scores": sampled.values.tolist(),
+    }
+
 @app.get("/quiz")
 async def get_quiz():
     """Serve the onboarding quiz configuration to the frontend."""
