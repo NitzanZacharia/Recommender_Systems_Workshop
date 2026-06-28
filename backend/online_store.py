@@ -19,11 +19,26 @@ _excluded: dict[str, set] = {}
 # {user_id: {beer_id: float_multiplier, ...}}
 _adjustments: dict[str, dict] = {}
 
+# {user_id: {beer_id: float_rating}} — actual rating values for fold-in / CB profile
+_ratings: dict[str, dict] = {}
+
 
 def record_rating(user_id: str, beer_id, rating: float) -> None:
     """Mark a beer as rated by a user (adds to exclusion set)."""
     with _lock:
         _excluded.setdefault(user_id, set()).add(beer_id)
+
+
+def record_rating_value(user_id: str, beer_id, rating: float) -> None:
+    """Store the numeric rating value for a beer (used for fold-in and CB profile building)."""
+    with _lock:
+        _ratings.setdefault(user_id, {})[beer_id] = float(rating)
+
+
+def get_user_ratings(user_id: str) -> dict:
+    """Return {beer_id: rating} for all beers the user has rated this session."""
+    with _lock:
+        return dict(_ratings.get(user_id, {}))
 
 
 def get_excluded_ids(user_id: str) -> set:
@@ -51,3 +66,4 @@ def clear_user(user_id: str) -> None:
     with _lock:
         _excluded.pop(user_id, None)
         _adjustments.pop(user_id, None)
+        _ratings.pop(user_id, None)

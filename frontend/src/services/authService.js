@@ -23,6 +23,7 @@ const writeUsers = (users) => {
 
 const toPublicUser = (email, record) => ({
   email,
+  userId: email,
   needsColdStart: !record.coldStartCompleted,
   ratings: record.ratings || {},
 });

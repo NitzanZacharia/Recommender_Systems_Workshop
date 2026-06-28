@@ -11,26 +11,48 @@ from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sklearn.metrics.pairwise import cosine_similarity
 
-from backend.online_store import record_rating, get_excluded_ids, add_score_adjustments, get_score_adjustments
+from backend.online_store import (
+    record_rating, get_excluded_ids, add_score_adjustments, get_score_adjustments,
+    record_rating_value, get_user_ratings,
+)
 
 
 QUIZ_DATA_PATH = Path(__file__).resolve().parent.parent / "quiz_data.json"
+NEW_RATINGS_PATH = Path(__file__).resolve().parent.parent / "new_ratings.csv"
+
 STANDARD_CF_WEIGHT = 0.6
 STANDARD_LAMBDA = 0.25
 STANDARD_GROUP_PENALTY = 0.5
 HYBRID_MULTIPLIER = 3
 RERANK_MULTIPLIER = 2
 DEFAULT_RECOMMENDATION_NUM = 10
+MIN_FOLDIN_RATINGS = 5
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173",
+                   "http://localhost:5174", "http://127.0.0.1:5174",
+                   "http://localhost:5175", "http://127.0.0.1:5175"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _persist_rating(user_id: str, beer_id, rating: float) -> None:
+    """Append a rating row to new_ratings.csv for eventual retraining."""
+    try:
+        write_header = not NEW_RATINGS_PATH.exists()
+        row = pd.DataFrame([{
+            "username": str(user_id),
+            "beer_id": str(beer_id),
+            "rating_overall": rating,
+        }])
+        row.to_csv(NEW_RATINGS_PATH, mode="a", header=write_header, index=False)
+    except Exception:
+        pass  # persistence is best-effort; never block the rating response
 
 
 @app.on_event("startup")
@@ -223,6 +245,8 @@ async def submit_rating(payload: dict = Body(...)):
 
     # Mandatory: exclude this beer from future recommendations
     record_rating(user_id, beer_id, rating)
+    record_rating_value(user_id, beer_id, rating)
+    _persist_rating(user_id, beer_id, rating)
 
     # Bonus: heuristic score adjustments for similar beers
     if beer_id in cb.beer_id_to_index or str(beer_id) in [str(k) for k in cb.beer_id_to_index]:
@@ -379,21 +403,45 @@ def get_user_rec_candidates(user_id: str, candidate_num: int) -> pd.Series:
     Returns:
     - Series of recommendation candidates with hybrid CF/CB scores
     """
-    # Get extra recommendation candidates from the 2 pipelines
     expanded_candidate_num = HYBRID_MULTIPLIER * candidate_num
-
-    # Get runtime exclusions from the online store
     exclude = get_excluded_ids(user_id)
+    session_ratings = get_user_ratings(user_id)
 
     cf_candidates = cb_candidates = None
+
+    # CF: fold-in updated predictions for existing users with session ratings;
+    # standard frozen-U predictions otherwise.
     try:
-        cf_candidates = cf.cf_recommend(user_id, expanded_candidate_num, exclude_ids=exclude)
+        if session_ratings and user_id in cf.user_id_to_index:
+            cf_candidates = cf.cf_recommend_updated(
+                user_id, session_ratings, expanded_candidate_num, exclude_ids=exclude
+            )
+        else:
+            cf_candidates = cf.cf_recommend(user_id, expanded_candidate_num, exclude_ids=exclude)
     except ValueError:
         pass
+
     try:
         cb_candidates = cb.cb_recommend(user_id, expanded_candidate_num, exclude_ids=exclude)
     except ValueError:
         pass
+
+    # New-user fallback: build recommendations directly from session ratings.
+    if cf_candidates is None and cb_candidates is None:
+        if session_ratings:
+            try:
+                cb_candidates = cb.cb_recommend_from_ratings(
+                    session_ratings, expanded_candidate_num, exclude_ids=exclude
+                )
+            except ValueError:
+                pass
+        if cf_candidates is None and len(session_ratings) >= MIN_FOLDIN_RATINGS:
+            try:
+                cf_candidates = cf.cf_recommend_new_user(
+                    session_ratings, expanded_candidate_num, exclude_ids=exclude
+                )
+            except ValueError:
+                pass
 
     if cf_candidates is None and cb_candidates is None:
         raise ValueError(f"User '{user_id}' not found in either recommendation pipeline")
@@ -411,7 +459,6 @@ def get_user_rec_candidates(user_id: str, candidate_num: int) -> pd.Series:
         for beer_id, multiplier in adjustments.items():
             if beer_id in hybrid_candidates.index:
                 hybrid_candidates.loc[beer_id] *= multiplier
-        # Re-sort after adjustments
         hybrid_candidates = hybrid_candidates.sort_values(ascending=False)
 
     return hybrid_candidates

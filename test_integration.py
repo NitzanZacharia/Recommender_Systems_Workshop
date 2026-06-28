@@ -16,7 +16,7 @@ _ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(_ROOT))
 
 _has_artifacts = (_ROOT / "artifacts" / "cf_U.npy").exists()
-_has_csvs = (_ROOT / "train_set_enriched.csv").exists()
+_has_csvs = (_ROOT / "data" / "train_set.csv").exists()
 _can_run = _has_artifacts or _has_csvs
 
 pytestmark = pytest.mark.skipif(
@@ -84,7 +84,7 @@ def test_recommendations_valid_user(client, sample_user):
 
 def test_recommendations_invalid_user(client):
     response = client.get("/recommendations/unknown_user_99999")
-    assert response.status_code == 500
+    assert response.status_code == 404
 
 
 def test_recommendations_custom_count(client, sample_user):

@@ -31,17 +31,17 @@ from scipy.sparse.linalg import svds
 from sklearn.compose import ColumnTransformer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.preprocessing import normalize, OneHotEncoder, StandardScaler
 import joblib
 
 
 BASE_DIR = Path(__file__).resolve().parent
 ARTIFACTS_DIR = BASE_DIR / "artifacts"
 
-TRAIN_PATH = BASE_DIR / "train_set_enriched.csv"
-VAL_PATH = BASE_DIR / "val_set_enriched.csv"
-TEST_PATH = BASE_DIR / "test_set_enriched.csv"
-ITEM_PROFILES_PATH = BASE_DIR / "item_profiles_for_cold_start_enriched.csv"
+TRAIN_PATH = BASE_DIR / "data" / "train_set.csv"
+VAL_PATH = BASE_DIR / "data" / "val_set.csv"
+TEST_PATH = BASE_DIR / "data" / "test_set.csv"
+ITEM_PROFILES_PATH = BASE_DIR / "data" / "item_profiles_for_cold_start.csv"
 
 K_CANDIDATES = [5, 10, 20, 50]
 KNOWN_SCALES = [1.0, 5.0, 10.0, 20.0]
@@ -233,6 +233,7 @@ def eval_ranking_cf(
     n_evaluated = 0
     n_cold_users = 0
     n_cold_items = 0
+    max_k = max(k_values)
 
     test_df = test_df.dropna(subset=RATING_COLS)
     total = len(test_df)
@@ -252,9 +253,10 @@ def eval_ranking_cf(
         pred = np.clip(pred, 0.0, 1.0)
         pred[R_sparse.getrow(user_idx).indices] = -np.inf
 
-        rank = _rank_of(pred, item_idx)
-        _accumulate_rank(acc, rank, k_values)
         n_evaluated += 1
+        if item_idx in np.argpartition(pred, -max_k)[-max_k:]:
+            rank = _rank_of(pred, item_idx)
+            _accumulate_rank(acc, rank, k_values)
 
     log(f"    CF ranking: {total:,}/{total:,} rows processed — done")
     return _finalize_ranking(acc, n_evaluated, k_values), n_evaluated, n_cold_users, n_cold_items
@@ -275,6 +277,8 @@ def eval_ranking_cb(
     n_cold_items = 0
 
     cb_beer_id_to_index = {bid: i for i, bid in enumerate(cb_beer_ids)}
+    feature_matrix_normed = normalize(feature_matrix, norm='l2')
+    max_k = max(k_values)
 
     test_df = test_df.dropna(subset=RATING_COLS)
     train_by_user = {
@@ -299,8 +303,11 @@ def eval_ranking_cb(
         beer_indices = user_reviews["beer_id"].map(cb_beer_id_to_index).to_numpy()
         ratings = user_reviews["rating_overall"].to_numpy()
         profile = _cb_user_profile(beer_indices, ratings, feature_matrix)
-
-        sims = cosine_similarity(profile, feature_matrix).flatten()
+        profile_arr = np.asarray(profile).flatten()
+        pnorm = np.linalg.norm(profile_arr)
+        if pnorm > 0:
+            profile_arr /= pnorm
+        sims = np.asarray(feature_matrix_normed @ profile_arr).flatten()
         sims[beer_indices] = -np.inf
 
         for beer_id in user_tests["beer_id"]:
@@ -308,9 +315,10 @@ def eval_ranking_cb(
             if item_idx is None:
                 n_cold_items += 1
                 continue
-            rank = _rank_of(sims, item_idx)
-            _accumulate_rank(acc, rank, k_values)
             n_evaluated += 1
+            if item_idx in np.argpartition(sims, -max_k)[-max_k:]:
+                rank = _rank_of(sims, item_idx)
+                _accumulate_rank(acc, rank, k_values)
 
     log(f"    CB ranking: {total:,}/{total:,} users processed — done")
     return _finalize_ranking(acc, n_evaluated, k_values), n_evaluated, n_cold_users, n_cold_items
@@ -353,6 +361,8 @@ def eval_ranking_hybrid(
     shared_pos = {bid: i for i, bid in enumerate(shared_beer_ids)}
 
     cb_index_to_beer_id = {i: bid for bid, i in cb_beer_id_to_index.items()}
+    feature_matrix_normed = normalize(feature_matrix, norm='l2')
+    max_k = max(k_values)
 
     test_df = test_df.dropna(subset=RATING_COLS)
     train_by_user = {
@@ -384,7 +394,11 @@ def eval_ranking_hybrid(
         beer_indices = cb_reviews["beer_id"].map(cb_beer_id_to_index).to_numpy()
         ratings = cb_reviews["rating_overall"].to_numpy()
         profile = _cb_user_profile(beer_indices, ratings, feature_matrix)
-        cb_full = cosine_similarity(profile, feature_matrix).flatten()
+        profile_arr = np.asarray(profile).flatten()
+        pnorm = np.linalg.norm(profile_arr)
+        if pnorm > 0:
+            profile_arr /= pnorm
+        cb_full = np.asarray(feature_matrix_normed @ profile_arr).flatten()
         cb_scores = cb_full[cb_cols]
 
         hybrid = cf_weight * cf_scores + (1.0 - cf_weight) * cb_scores
@@ -401,9 +415,10 @@ def eval_ranking_hybrid(
             if pos is None:
                 n_cold_items += 1
                 continue
-            rank = _rank_of(hybrid, pos)
-            _accumulate_rank(acc, rank, k_values)
             n_evaluated += 1
+            if pos in np.argpartition(hybrid, -max_k)[-max_k:]:
+                rank = _rank_of(hybrid, pos)
+                _accumulate_rank(acc, rank, k_values)
 
     log(f"    Hybrid ranking: {total:,}/{total:,} users processed — done")
     return _finalize_ranking(acc, n_evaluated, k_values), n_evaluated, n_cold_users, n_cold_items
@@ -594,6 +609,127 @@ def evaluate_models() -> None:
 
 
 # ─────────────────────────────────────────────
+# Weight tuning
+# ─────────────────────────────────────────────
+def tune_hybrid_weights() -> None:
+    """Single-pass sweep of CF/CB blend weights on the val set.
+
+    CF and CB scores are computed once per user and reused for all candidate
+    weights, making this ~6x faster than running eval_ranking_hybrid separately
+    for each weight. Uses argpartition (O(n)) instead of argsort (O(n log n))
+    since only Hit Rate is needed (no exact rank required).
+    """
+    require_files()
+
+    log("=" * 60)
+    log("HYBRID WEIGHT TUNING (val set, Hit Rate@10)")
+    log("=" * 60)
+
+    val_df = pd.read_csv(VAL_PATH, usecols=RATING_COLS)
+
+    log("\nLoading CF artifacts ...")
+    U = np.load(ARTIFACTS_DIR / "cf_U.npy")
+    V = np.load(ARTIFACTS_DIR / "cf_V.npy")
+    user_means = np.load(ARTIFACTS_DIR / "cf_user_means.npy")
+    user_ids = np.load(ARTIFACTS_DIR / "cf_user_ids.npy", allow_pickle=True)
+    beer_ids = np.load(ARTIFACTS_DIR / "cf_beer_ids.npy", allow_pickle=True)
+    with open(ARTIFACTS_DIR / "cf_meta.json") as f:
+        scale = json.load(f)["scale"]
+
+    user_id_to_index = {uid: i for i, uid in enumerate(user_ids)}
+    beer_id_to_index = {bid: i for i, bid in enumerate(beer_ids)}
+
+    val_df["username"] = val_df["username"].astype(str)
+    val_df["beer_id"] = val_df["beer_id"].astype(str)
+    if scale != 1.0:
+        val_df["rating_overall"] = val_df["rating_overall"] / scale
+
+    log("Loading CB artifacts ...")
+    feature_matrix = load_npz(ARTIFACTS_DIR / "cb_feature_matrix.npz")
+    cb_beer_ids = np.load(ARTIFACTS_DIR / "cb_beer_ids.npy", allow_pickle=True)
+    cb_train_df = pd.read_csv(ARTIFACTS_DIR / "cb_train_df.csv")
+    cb_train_df["username"] = cb_train_df["username"].astype(str)
+    cb_train_df["beer_id"] = cb_train_df["beer_id"].astype(str)
+
+    weights = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
+    K = 10
+
+    cb_beer_id_to_index = {bid: i for i, bid in enumerate(cb_beer_ids)}
+    shared_beer_ids = [bid for bid in beer_id_to_index if bid in cb_beer_id_to_index]
+    cf_cols = np.array([beer_id_to_index[bid] for bid in shared_beer_ids])
+    cb_cols = np.array([cb_beer_id_to_index[bid] for bid in shared_beer_ids])
+    shared_pos = {bid: i for i, bid in enumerate(shared_beer_ids)}
+    cb_index_to_beer_id = {i: bid for bid, i in cb_beer_id_to_index.items()}
+    feature_matrix_normed = normalize(feature_matrix, norm='l2')
+
+    hits = np.zeros(len(weights), dtype=int)
+    n_evaluated = 0
+
+    val_df = val_df.dropna(subset=RATING_COLS)
+    train_by_user = {user: group for user, group in cb_train_df.groupby("username")}
+    user_groups = list(val_df.groupby("username"))
+    total = len(user_groups)
+
+    log(f"\nSingle-pass sweep over {total:,} val users ...")
+    for i, (username, user_tests) in enumerate(user_groups):
+        if i % 2000 == 0:
+            log(f"  {i:,}/{total:,} users processed ...")
+
+        cf_user_idx = user_id_to_index.get(username)
+        user_reviews = train_by_user.get(username)
+        if cf_user_idx is None or user_reviews is None or len(user_reviews) == 0:
+            continue
+
+        cb_reviews = user_reviews[user_reviews["beer_id"].isin(cb_beer_id_to_index)]
+        if len(cb_reviews) == 0:
+            continue
+
+        cf_full = np.clip(U[cf_user_idx] @ V.T + user_means[cf_user_idx], 0.0, 1.0)
+        cf_scores = cf_full[cf_cols]
+
+        beer_indices = cb_reviews["beer_id"].map(cb_beer_id_to_index).to_numpy()
+        ratings = cb_reviews["rating_overall"].to_numpy()
+        profile = _cb_user_profile(beer_indices, ratings, feature_matrix)
+        profile_arr = np.asarray(profile).flatten()
+        pnorm = np.linalg.norm(profile_arr)
+        if pnorm > 0:
+            profile_arr /= pnorm
+        cb_full = np.asarray(feature_matrix_normed @ profile_arr).flatten()
+        cb_scores = cb_full[cb_cols]
+
+        mask = np.zeros(len(shared_beer_ids), dtype=bool)
+        for cb_idx in beer_indices:
+            pos = shared_pos.get(cb_index_to_beer_id.get(cb_idx))
+            if pos is not None:
+                mask[pos] = True
+
+        for beer_id in user_tests["beer_id"]:
+            pos = shared_pos.get(beer_id)
+            if pos is None:
+                continue
+            for w_idx, cf_w in enumerate(weights):
+                hybrid = cf_w * cf_scores + (1.0 - cf_w) * cb_scores
+                hybrid[mask] = -np.inf
+                if pos in np.argpartition(hybrid, -K)[-K:]:
+                    hits[w_idx] += 1
+            n_evaluated += 1
+
+    log(f"  {total:,}/{total:,} users processed — done")
+    log(f"\n  Evaluated {n_evaluated:,} val pairs")
+
+    results = [(weights[w], hits[w] / max(n_evaluated, 1)) for w in range(len(weights))]
+    best_cf, best_hr = max(results, key=lambda x: x[1])
+
+    log("\n" + "=" * 60)
+    log(f"  {'CF weight':>10}  {'CB weight':>10}  {'Hit Rate@10':>12}")
+    log("  " + "-" * 36)
+    for cf_weight, hr in results:
+        marker = "  <- best" if cf_weight == best_cf else ""
+        log(f"  {cf_weight:>10.1f}  {1 - cf_weight:>10.1f}  {hr:>12.4f}{marker}")
+    log(f"\n  Best CF weight = {best_cf:.1f}  (current api_server.py value: 0.6)")
+
+
+# ─────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────
 def main() -> None:
@@ -721,5 +857,7 @@ def main() -> None:
 if __name__ == "__main__":
     if "--evaluate" in sys.argv:
         evaluate_models()
+    elif "--tune-weights" in sys.argv:
+        tune_hybrid_weights()
     else:
         main()

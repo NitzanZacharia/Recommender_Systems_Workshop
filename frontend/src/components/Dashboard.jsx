@@ -402,6 +402,56 @@ const FavoritesPage = ({ allBeers, favorites, onCardClick, onToggleFav }) => {
   );
 };
 
+const ListCard = ({ id, title, beers = [], icon, isAddButton, isCustom, onAdd, onSelect, onDelete }) => (
+  <div
+    className={isAddButton ? undefined : 'curated-card'}
+    style={isAddButton ? {
+      backgroundColor: '#1a1a1a',
+      border: '2px dashed #666',
+      borderRadius: '16px',
+      padding: '1.8rem',
+      minHeight: '180px',
+      display: 'flex',
+      flexDirection: 'column',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      cursor: 'pointer',
+      transition: 'transform 0.25s ease, border-color 0.25s ease',
+    } : undefined}
+    onMouseEnter={isAddButton ? (e) => { e.currentTarget.style.transform = 'translateY(-6px)'; e.currentTarget.style.borderColor = '#E67E22'; } : undefined}
+    onMouseLeave={isAddButton ? (e) => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.borderColor = '#666'; } : undefined}
+    onClick={() => {
+      if (isAddButton) onAdd();
+      else onSelect(id);
+    }}
+  >
+    {isCustom && !isAddButton && (
+      <button
+        onClick={(e) => onDelete(id, e)}
+        style={{ position: 'absolute', top: '10px', right: '10px', background: 'none', border: 'none', color: '#ff4d4d', fontSize: '1.2rem', cursor: 'pointer', opacity: 0.7 }}
+        title="Delete List"
+      >
+        ✖
+      </button>
+    )}
+
+    {isAddButton ? (
+      <>
+        <div style={{ fontSize: '3rem', color: '#666', marginTop: '1rem' }}>+</div>
+        <h3 style={{ color: '#666', margin: 0, marginTop: 'auto' }}>Create New List</h3>
+      </>
+    ) : (
+      <>
+        <div className="curated-icon">{icon}</div>
+        <div>
+          <h3 className="curated-title">{title}</h3>
+          <span className="curated-subtitle">{beers.length} Beers</span>
+        </div>
+      </>
+    )}
+  </div>
+);
+
 // --- UPDATED: Beer Lists Page Component ---
 const BeerListsPage = ({ allBeers = [], onNavigate }) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -498,61 +548,6 @@ const BeerListsPage = ({ allBeers = [], onNavigate }) => {
     setMyLists(updatedLists);
     setActiveList({ ...activeList, beers: activeList.beers.filter(id => id !== beerId) });
   };
-
-  // --- SUB-COMPONENTS ---
-
-  const ListCard = ({ id, title, beers = [], icon, color, isAddButton, isCustom }) => (
-    <div
-      className={isAddButton ? undefined : 'curated-card'}
-      style={isAddButton ? {
-        backgroundColor: '#1a1a1a',
-        border: '2px dashed #666',
-        borderRadius: '16px',
-        padding: '1.8rem',
-        minHeight: '180px',
-        display: 'flex',
-        flexDirection: 'column',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        cursor: 'pointer',
-        transition: 'transform 0.25s ease, border-color 0.25s ease',
-      } : undefined}
-      onMouseEnter={isAddButton ? (e) => { e.currentTarget.style.transform = 'translateY(-6px)'; e.currentTarget.style.borderColor = '#E67E22'; } : undefined}
-      onMouseLeave={isAddButton ? (e) => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.borderColor = '#666'; } : undefined}
-      onClick={() => {
-        if (isAddButton) setIsModalOpen(true);
-        else {
-          const listData = myLists.find(l => l.id === id);
-          setActiveList(listData);
-        }
-      }}
-    >
-      {isCustom && !isAddButton && (
-        <button
-          onClick={(e) => handleDeleteClick(id, e)}
-          style={{ position: 'absolute', top: '10px', right: '10px', background: 'none', border: 'none', color: '#ff4d4d', fontSize: '1.2rem', cursor: 'pointer', opacity: 0.7 }}
-          title="Delete List"
-        >
-          ✖
-        </button>
-      )}
-
-      {isAddButton ? (
-        <>
-          <div style={{ fontSize: '3rem', color: '#666', marginTop: '1rem' }}>+</div>
-          <h3 style={{ color: '#666', margin: 0, marginTop: 'auto' }}>Create New List</h3>
-        </>
-      ) : (
-        <>
-          <div className="curated-icon">{icon}</div>
-          <div>
-            <h3 className="curated-title">{title}</h3>
-            <span className="curated-subtitle">{beers.length} Beers</span>
-          </div>
-        </>
-      )}
-    </div>
-  );
 
   // --- RENDER LOGIC ---
 
@@ -683,8 +678,22 @@ const BeerListsPage = ({ allBeers = [], onNavigate }) => {
       <div>
         <h3 style={{ color: '#E67E22', borderBottom: '1px solid #333', paddingBottom: '0.5rem', marginBottom: '1.5rem' }}>My Custom Lists</h3>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '1.5rem' }}>
-          {myLists.map(list => <ListCard key={list.id} {...list} isCustom={true} />)}
-          <ListCard isAddButton={true} />
+          {myLists.map(list => (
+            <ListCard
+              key={list.id}
+              {...list}
+              isCustom={true}
+              onAdd={() => setIsModalOpen(true)}
+              onSelect={(id) => setActiveList(myLists.find(l => l.id === id))}
+              onDelete={handleDeleteClick}
+            />
+          ))}
+          <ListCard
+            isAddButton={true}
+            onAdd={() => setIsModalOpen(true)}
+            onSelect={() => {}}
+            onDelete={() => {}}
+          />
         </div>
       </div>
 
@@ -1236,7 +1245,33 @@ const AdventurousPage = ({ userId, onCardClick, favorites, onToggleFav }) => {
   };
 
   useEffect(() => {
-    if (userId) fetchAdventurous();
+    if (!userId) return;
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const { recommended_ids, scores } = await getAdventurousRecommendations(userId, 10);
+        const scaled = scaleScores(scores);
+        const details = await Promise.all(recommended_ids.map((id) => getBeerDetails(id)));
+        if (cancelled) return;
+        setBeers(details.map((beer, i) => ({
+          id: beer.beer_id,
+          name: beer.beer_name,
+          style: beer.beer_style,
+          abv: beer.beer_abv,
+          match_score: scaled[i],
+          rating: beer.avg_overall_rating,
+          image_url: fallbackImage(beer.beer_name),
+        })));
+      } catch (err) {
+        if (cancelled) return;
+        setError(err.message);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
   }, [userId]);
 
   if (!userId) return (
@@ -1321,7 +1356,32 @@ const AntiRecommenderPage = ({ userId, onCardClick, favorites, onToggleFav }) =>
   };
 
   useEffect(() => {
-    if (userId) fetchAnti();
+    if (!userId) return;
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const { recommended_ids, scores } = await getAntiRecommendations(userId, 10);
+        const details = await Promise.all(recommended_ids.map((id) => getBeerDetails(id)));
+        if (cancelled) return;
+        setBeers(details.map((beer, i) => ({
+          id: beer.beer_id,
+          name: beer.beer_name,
+          style: beer.beer_style,
+          abv: beer.beer_abv,
+          match_score: scores[i],
+          rating: beer.avg_overall_rating,
+          image_url: fallbackImage(beer.beer_name),
+        })));
+      } catch (err) {
+        if (cancelled) return;
+        setError(err.message);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
   }, [userId]);
 
   if (!userId) return (
@@ -1382,17 +1442,18 @@ const AntiRecommenderPage = ({ userId, onCardClick, favorites, onToggleFav }) =>
 };
 
 // 3. Main Dashboard Component
-const RecommenderDashboard = ({ data, onLogout }) => {
+const RecommenderDashboard = ({ data, onLogout, coldStartRecs, userId }) => {
   const [selectedBeer, setSelectedBeer] = useState(null);
   const [favorites, setFavorites] = useState([]);
   const [userRatings, setUserRatings] = useState({});
   const [activeTab, setActiveTab] = useState('home');
-  const [isDemoMode, setIsDemoMode] = useState(true);
+  const [isDemoMode, setIsDemoMode] = useState(!coldStartRecs);
   const [apiData, setApiData] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [apiError, setApiError] = useState(null);
   const [ratingVersion, setRatingVersion] = useState(0);
   const [liveUserId, setLiveUserId] = useState(null);
+  const [coldStartShown, setColdStartShown] = useState(false);
   const [partyMembers, setPartyMembers] = useState(['Me']);
   const friendDatabase = ["Alex (Lager Lover)", "Sarah (Hops Fanatic)", "David (Stout Guy)"];
 
@@ -1404,21 +1465,57 @@ const RecommenderDashboard = ({ data, onLogout }) => {
         setIsLoading(true);
         setApiError(null);
         try {
-          let userId = liveUserId;
-          if (!userId) {
-            const { user_ids } = await getSampleUsers(1);
-            userId = user_ids[0];
-            if (!cancelled) setLiveUserId(userId);
+          // 1. Cold-start: show quiz-based recs on first load for a new user.
+          if (coldStartRecs && !coldStartShown) {
+            const { recommended_ids, scores } = coldStartRecs;
+            const scaled = scaleScores(scores);
+            const details = await Promise.all(
+              recommended_ids.map((id) => getBeerDetails(id))
+            );
+            if (cancelled) return;
+            setColdStartShown(true);
+            const beers = details.map((beer, i) => mapBeerToCard(beer, scaled[i]));
+            setApiData({ swimlanes: [{ id: 'top-matches', title: 'Top Matches for You', beers }] });
+            return;
           }
 
-          const { recommended_ids, scores } = await getRecommendations(userId, 20);
+          // 2. Real user: fetch recommendations using their actual identity.
+          if (userId) {
+            try {
+              const { recommended_ids, scores } = await getRecommendations(userId, 20);
+              const scaled = scaleScores(scores);
+              const details = await Promise.all(
+                recommended_ids.map((id) => getBeerDetails(id))
+              );
+              if (cancelled) return;
+              const beers = details.map((beer, i) => mapBeerToCard(beer, scaled[i]));
+              const sorted = [...beers].sort((a, b) => b.match_score - a.match_score);
+              setApiData({
+                swimlanes: [
+                  { id: 'top-matches', title: 'Top Matches for You', beers: sorted.slice(0, 10) },
+                  { id: 'also-like', title: 'You Might Also Like', beers: sorted.slice(10) },
+                ],
+              });
+            } catch {
+              // User has no session ratings yet — keep showing current data (cold-start recs)
+            }
+            return;
+          }
+
+          // 3. Demo mode with a sample user (unchanged behaviour).
+          let sampleId = liveUserId;
+          if (!sampleId) {
+            const { user_ids } = await getSampleUsers(1);
+            sampleId = user_ids[0];
+            if (!cancelled) setLiveUserId(sampleId);
+          }
+          const { recommended_ids, scores } = await getRecommendations(sampleId, 20);
           const scaled = scaleScores(scores);
           const details = await Promise.all(
             recommended_ids.map((id) => getBeerDetails(id))
           );
-          const beers = details.map((beer, i) => mapBeerToCard(beer, scaled[i]));
-
           if (cancelled) return;
+          const beers = details.map((beer, i) => mapBeerToCard(beer, scaled[i]));
           const sorted = [...beers].sort((a, b) => b.match_score - a.match_score);
           setApiData({
             swimlanes: [
@@ -1436,14 +1533,9 @@ const RecommenderDashboard = ({ data, onLogout }) => {
       };
 
       fetchLiveData();
-
       return () => { cancelled = true; };
-    } else {
-      setApiError(null);
-      setIsLoading(false);
     }
-  }, [isDemoMode, ratingVersion]);
-
+  }, [isDemoMode, ratingVersion]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const activeData = isDemoMode ? data : apiData;
 
@@ -1476,8 +1568,9 @@ const RecommenderDashboard = ({ data, onLogout }) => {
     }));
 
     if (!isDemoMode) {
+      const activeUserId = userId || liveUserId;
       try {
-        await submitRating(liveUserId, beerId, rating);
+        if (activeUserId) await submitRating(activeUserId, beerId, rating);
       } catch {
         // Non-critical — local state was already updated
       }

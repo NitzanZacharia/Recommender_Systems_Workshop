@@ -4,6 +4,7 @@ import RecommenderDashboard, { BottleIcon } from './components/Dashboard';
 import LandingPage from './components/LandingPage';
 import './components/Dashboard.css';
 import { saveColdStartRatings } from './services/authService';
+import { getColdStartRecommendations } from './services/apiService';
 import CherryTartImage from './assets/Cherry Tart.jpg';
 import citrusBlastImage from './assets/Citrus Blast.jpg';
 import desertMirageImage from './assets/Sour Ale.jpg';
@@ -18,6 +19,40 @@ import spicedPumpkinImage from './assets/Spiced Pumpkin.jpg';
 
 // --- COLD START QUESTIONNAIRE ---
 const MIN_RATINGS_REQUIRED = 5;
+
+// Maps each probe beer id to the quiz cluster it represents.
+// These beers are never in the real catalog, so rating them doesn't
+// consume future recommendation slots.
+const COLD_START_BEER_CLUSTERS = {
+  b1: 'dark',   // Imperial Stout
+  b2: 'hoppy',  // NEIPA
+  b3: 'light',  // Pilsner
+  b4: 'dark',   // Amber Ale
+  b5: 'sour',   // Sour Ale
+  b6: 'hoppy',  // IPA
+  b7: 'dark',   // Porter
+  b8: 'light',  // Wheat Beer
+  b9: 'light',  // Seasonal Ale
+  b10: 'sour',  // Fruited Sour
+};
+
+const computeClusterScores = (ratings) => {
+  const clusters = ['hoppy', 'dark', 'sour', 'light'];
+  const buckets = {};
+  Object.entries(ratings).forEach(([beerId, star]) => {
+    const cluster = COLD_START_BEER_CLUSTERS[beerId];
+    if (cluster) {
+      if (!buckets[cluster]) buckets[cluster] = [];
+      buckets[cluster].push(star);
+    }
+  });
+  const scores = {};
+  clusters.forEach(c => {
+    const vals = buckets[c] || [];
+    scores[c] = vals.length ? vals.reduce((a, b) => a + b) / vals.length : 3;
+  });
+  return scores;
+};
 
 const ColdStartCard = ({ beer, rating, hoverRating, onHover, onLeave, onRate }) => (
   <div className="beer-card-wrapper">
@@ -92,11 +127,28 @@ const ColdStartQuestionnaire = ({ beers, onComplete }) => {
 function App() {
   const [currentUser, setCurrentUser] = useState(null);
   const [needsColdStart, setNeedsColdStart] = useState(false);
-  const [isDemoMode, setIsDemoMode] = useState(true); 
-  
+  const [isDemoMode, setIsDemoMode] = useState(true);
+  const [coldStartRecs, setColdStartRecs] = useState(null);
+  const [coldStartLoading, setColdStartLoading] = useState(false);
+
   // NEW: State to control if the Auth Screen is visible
   const [showAuth, setShowAuth] = useState(false);
   const [initialAuthView, setInitialAuthView] = useState(true); // true = login, false = register
+
+  const handleColdStartComplete = async (ratings) => {
+    setColdStartLoading(true);
+    try {
+      const clusterScores = computeClusterScores(ratings);
+      const recs = await getColdStartRecommendations(clusterScores);
+      setColdStartRecs(recs);
+    } catch {
+      // API unavailable — Dashboard will fall back to demo mode
+    } finally {
+      saveColdStartRatings(currentUser.email, ratings);
+      setNeedsColdStart(false);
+      setColdStartLoading(false);
+    }
+  };
 
 const dummyData = {
     swimlanes: [
@@ -163,30 +215,34 @@ const dummyData = {
     return <LandingPage onStartAuth={handleStartAuth} />;
   }
 
-  // 3. If logged in but needs cold start, show Questionnaire
+  // 3. If logged in but needs cold start, show Questionnaire (or loading screen)
   if (needsColdStart) {
+    if (coldStartLoading) {
+      return (
+        <div style={{ backgroundColor: '#141414', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff' }}>
+          <p style={{ fontSize: '1.2rem', color: '#ccc' }}>Building your taste profile…</p>
+        </div>
+      );
+    }
+
     const coldStartBeers = dummyData.swimlanes.flatMap(lane => lane.beers)
       .filter((beer, index, self) => self.findIndex(b => b.id === beer.id) === index);
 
     return (
       <ColdStartQuestionnaire
         beers={coldStartBeers}
-        onComplete={(ratings) => {
-          // The questionnaire collects beer ratings, which we persist locally.
-          // The quiz-based cold-start endpoint (style answers) is a separate
-          // flow driven by the onboarding quiz, not this screen.
-          saveColdStartRatings(currentUser.email, ratings);
-          setNeedsColdStart(false);
-        }}
+        onComplete={handleColdStartComplete}
       />
     );
   }
 
   // 4. Otherwise, show the main application
   return (
-    <RecommenderDashboard 
-      data={dummyData} 
-      onLogout={handleLogout} 
+    <RecommenderDashboard
+      data={dummyData}
+      coldStartRecs={coldStartRecs}
+      userId={currentUser.userId}
+      onLogout={handleLogout}
     />
   );
 }

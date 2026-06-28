@@ -21,7 +21,7 @@ from dummy_data import make_rating_matrix
 
 
 BASE_DIR = Path(__file__).resolve().parent
-TRAIN_PATH = BASE_DIR / "train_set_enriched.csv"
+TRAIN_PATH = BASE_DIR / "data" / "train_set.csv"
 ARTIFACTS_DIR = BASE_DIR / "artifacts"
 
 
@@ -268,6 +268,31 @@ else:
 
 
 # ─────────────────────────────────────────────
+# SHARED POST-INIT DERIVED VALUES
+# ─────────────────────────────────────────────
+beer_id_to_index = {bid: idx for idx, bid in enumerate(beer_ids)}
+
+# Recover sigma from V without needing a separate saved artifact.
+# Since V = Vt_raw.T @ sqrt(diag(sigma)) and Vt_raw rows are orthonormal:
+#   V.T @ V = diag(sigma)
+# Shape: (k,)
+sigma_values = np.diag(V.T @ V)
+
+
+def _cf_lookup_beer_idx(bid):
+    """Return the column index of a beer_id, handling int/str type mismatches."""
+    if bid in beer_id_to_index:
+        return beer_id_to_index[bid]
+    if len(beer_ids) > 0:
+        target_type = type(beer_ids[0])
+        try:
+            return beer_id_to_index[target_type(bid)]
+        except (ValueError, TypeError, KeyError):
+            pass
+    return None
+
+
+# ─────────────────────────────────────────────
 # 5. RECONSTRUCT PREDICTED RATINGS  (on demand, per user)
 # ─────────────────────────────────────────────
 # Predicted rating = dot product of user vector and beer vector,
@@ -326,23 +351,88 @@ def cf_recommend(user_id: str, n: int = 10, exclude_ids=None, ascending: bool = 
     return scores.nsmallest(n) if ascending else scores.nlargest(n)
 
 
-# ── Quick sanity check ────────────────────────────────────────────────────────
-sample_user = user_ids[3]    # pick a user who has some ratings
-sample_idx  = user_id_to_index[sample_user]
+def cf_recommend_new_user(rated_beers: dict, n: int = 10, exclude_ids=None) -> pd.Series:
+    """
+    CF recommendations for a brand-new user not in the training matrix.
 
-print(f"\n{'─'*45}")
-print(f"Sample: beers already rated by '{sample_user}'")
-sample_row    = R_sparse.getrow(sample_idx)
-rated = pd.Series(sample_row.data, index=beer_ids[sample_row.indices]).sort_values(ascending=False)
-print(rated.head(5).round(3))
+    Uses SVD fold-in: the user's rating vector is projected into the existing
+    latent space without retraining. Formula:
+        u_new = (r_centered @ V) / sigma_values
+        predictions = u_new @ V.T + user_mean
 
-print(f"\nTop-10 CF recommendations for '{sample_user}':")
-recs = cf_recommend(sample_user, n=10)
-print(recs.round(3))
+    Parameters
+    ----------
+    rated_beers : {beer_id: rating (1-5 scale)} from session
+    """
+    r = np.zeros(n_beers)
+    for bid, rating in rated_beers.items():
+        idx = _cf_lookup_beer_idx(bid)
+        if idx is not None:
+            r[idx] = float(rating) / scale
 
-# Sanity: none of the recommended beers should appear in the already-rated list
-overlap = set(recs.index) & set(rated.index)
-print(f"\nOverlap with already-rated beers: {len(overlap)}  (should be 0)")
+    if r.sum() == 0:
+        raise ValueError("None of the rated beers are in the CF catalog.")
+
+    rated_mask = r > 0
+    user_mean = float(r[rated_mask].mean())
+    r_centered = r.copy()
+    r_centered[rated_mask] -= user_mean
+
+    u_new = (r_centered @ V) / sigma_values
+    predictions = np.clip(u_new @ V.T + user_mean, 0.0, 1.0)
+
+    scores = pd.Series(predictions, index=beer_ids)
+    exclude_str = {str(b) for b in rated_beers} | {str(b) for b in (exclude_ids or [])}
+    scores = scores[[b for b in scores.index if str(b) not in exclude_str]]
+    return scores.nlargest(n)
+
+
+def cf_recommend_updated(user_id: str, session_ratings: dict, n: int = 10,
+                          exclude_ids=None, ascending: bool = False) -> pd.Series:
+    """
+    CF recommendations for an existing user incorporating new session ratings.
+
+    Combines their full training history with session ratings and re-projects
+    via fold-in, giving coherent live updates without retraining.
+
+    Parameters
+    ----------
+    user_id       : must be in user_id_to_index
+    session_ratings : {beer_id: rating (1-5 scale)} from online_store
+    """
+    if user_id not in user_id_to_index:
+        raise ValueError(f"User '{user_id}' not found in CF matrix.")
+
+    user_idx = user_id_to_index[user_id]
+
+    # Seed with training ratings (already normalised to [0, 1])
+    row = R_sparse.getrow(user_idx)
+    r = np.zeros(n_beers)
+    r[row.indices] = row.data
+
+    # Override/add session ratings (normalise from raw 1-5 to [0, 1])
+    for bid, rating in session_ratings.items():
+        idx = _cf_lookup_beer_idx(bid)
+        if idx is not None:
+            r[idx] = float(rating) / scale
+
+    rated_mask = r > 0
+    user_mean = float(r[rated_mask].mean())
+    r_centered = r.copy()
+    r_centered[rated_mask] -= user_mean
+
+    u_updated = (r_centered @ V) / sigma_values
+    predictions = np.clip(u_updated @ V.T + user_mean, 0.0, 1.0)
+
+    scores = pd.Series(predictions, index=beer_ids)
+    exclude_str = (
+        {str(b) for b in beer_ids[row.indices]}
+        | {str(b) for b in session_ratings}
+        | {str(b) for b in (exclude_ids or [])}
+    )
+    scores = scores[[b for b in scores.index if str(b) not in exclude_str]]
+    return scores.nsmallest(n) if ascending else scores.nlargest(n)
+
 
 
 # ─────────────────────────────────────────────
@@ -395,7 +485,20 @@ def compute_rmse_for_k(rating_matrix_or_sparse, user_means, k_value):
 
 
 if __name__ == "__main__":
-    print(f"\n{'─'*45}")
+    sample_user = user_ids[3]
+    sample_idx  = user_id_to_index[sample_user]
+    print(f"\n{'-'*45}")
+    print(f"Sample: beers already rated by '{sample_user}'")
+    sample_row = R_sparse.getrow(sample_idx)
+    rated = pd.Series(sample_row.data, index=beer_ids[sample_row.indices]).sort_values(ascending=False)
+    print(rated.head(5).round(3))
+    print(f"\nTop-10 CF recommendations for '{sample_user}':")
+    recs = cf_recommend(sample_user, n=10)
+    print(recs.round(3))
+    overlap = set(recs.index) & set(rated.index)
+    print(f"\nOverlap with already-rated beers: {len(overlap)}  (should be 0)")
+
+    print(f"\n{'-'*45}")
     print("Tuning k — RMSE on observed ratings:")
     print(f"{'─'*45}")
     for k_val in [5, 10, 20, 50, 100]:

@@ -26,8 +26,8 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 BASE_DIR = Path(__file__).resolve().parent
 
-ITEM_PROFILES_PATH = BASE_DIR / "item_profiles_for_cold_start_enriched.csv"
-TRAIN_PATH = BASE_DIR / "train_set_enriched.csv"
+ITEM_PROFILES_PATH = BASE_DIR / "data" / "item_profiles_for_cold_start.csv"
+TRAIN_PATH = BASE_DIR / "data" / "train_set.csv"
 ARTIFACTS_DIR = BASE_DIR / "artifacts"
 
 
@@ -282,6 +282,67 @@ def cb_recommend(user_id: str, n: int = 10, exclude_ids=None, ascending: bool = 
     return pd.Series(
         similarities[top_indices],
         index=item_profiles.iloc[top_indices]["beer_id"].values,
+        name="cb_score",
+    ).sort_values(ascending=ascending)
+
+
+def cb_recommend_from_ratings(rated_beers: dict, n: int = 10, exclude_ids=None,
+                               ascending: bool = False) -> pd.Series:
+    """
+    CB recommendations for a user not in the training data, built directly
+    from their session ratings.
+
+    Parameters
+    ----------
+    rated_beers : {beer_id: rating (1-5 scale)} from online_store
+    """
+    # Type-flexible lookup — handle int/str mismatches between demo and real data
+    valid = {}
+    for bid, rating in rated_beers.items():
+        if bid in beer_id_to_index:
+            valid[bid] = rating
+        elif len(beer_ids) > 0:
+            target_type = type(beer_ids[0])
+            try:
+                native_bid = target_type(bid)
+                if native_bid in beer_id_to_index:
+                    valid[native_bid] = rating
+            except (ValueError, TypeError):
+                pass
+
+    if not valid:
+        raise ValueError("No rated beers found in CB catalog.")
+
+    beer_indices = np.array([beer_id_to_index[bid] for bid in valid])
+    ratings = np.clip(np.array(list(valid.values()), dtype=float) / 5.0, 0.0, 1.0)
+
+    user_profile = np.average(
+        ensure_2d(beer_feature_matrix[beer_indices]),
+        axis=0,
+        weights=ratings,
+    ).reshape(1, -1)
+
+    similarities = cosine_similarity(user_profile, beer_feature_matrix).flatten()
+
+    exclude_str = {str(b) for b in valid} | {str(b) for b in (exclude_ids or [])}
+    candidate_indices = [
+        idx for idx, bid in enumerate(beer_ids)
+        if str(bid) not in exclude_str
+    ]
+
+    if not candidate_indices:
+        return pd.Series(dtype=float, name="cb_score")
+
+    candidate_scores = similarities[candidate_indices]
+    if ascending:
+        order = np.argsort(candidate_scores)[:n]
+    else:
+        order = np.argsort(candidate_scores)[::-1][:n]
+    top_indices = [candidate_indices[i] for i in order]
+
+    return pd.Series(
+        similarities[top_indices],
+        index=[beer_ids[i] for i in top_indices],
         name="cb_score",
     ).sort_values(ascending=ascending)
 
