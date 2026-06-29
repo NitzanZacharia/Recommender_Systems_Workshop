@@ -75,5 +75,5 @@
   - Loads CF and CB pipeline artifacts from `artifacts/` at startup.
   - Dispatches to the appropriate pipeline based on the endpoint called.
   - Returns JSON recommendation lists with beer metadata and match scores.
-- **More info:** Hybrid blending uses `STANDARD_CF_WEIGHT = 0.6` (tunable via `py train_models.py --tune-weights`). Supports development (`fastapi dev`, auto-reload) and production (`fastapi run`) modes.
+- **More info:** Hybrid blending uses a per-user adaptive CF weight that ramps linearly from 0.1 (new users, no rating history) to 0.6 (experienced users, ≥ 50 ratings), computed at request time from the user's historical + session rating count. The upper bound `STANDARD_CF_WEIGHT = 0.6` is tunable via `py train_models.py --tune-weights`. Supports development (`fastapi dev`, auto-reload) and production (`fastapi run`) modes.
 - **Source code:** [`/backend/api_server.py`](./backend/api_server.py)

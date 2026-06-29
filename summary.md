@@ -43,7 +43,7 @@ Both JSON files are ingested via `data_processing/process_json.py` into PostgreS
 
 - **Collaborative Filtering (sparse SVD)** — factorises the user–item rating matrix into latent factors; used for personalised recommendations for existing users. Supports real-time fold-in so new ratings are reflected immediately without retraining.
 - **Content-Based (TF-IDF + cosine similarity)** — represents each beer as a feature vector and finds similar beers based on style, brewery, and text. Updates continuously as the user rates beers.
-- **Hybrid blending** — CF and CB scores are linearly blended for the main recommendation feed.
+- **Hybrid blending** — CF and CB scores are linearly blended for the main recommendation feed. The CF weight is adapted per-user based on rating count: new users get more CB weight (content signal is more reliable with sparse history), while experienced users get more CF weight (collaborative signal improves with more data). Weight ramps linearly from 0.1 (0 ratings) to 0.6 (≥ 50 ratings).
 - **MMR re-ranking** — Maximal Marginal Relevance applied to the hybrid scores to promote diversity in the recommendations.
 - **Cold-start (two-method onboarding)** — new users choose between Method 1 (search for known beers and rate them 1–5; minimum 3 ratings required) or Method 2 (rate the importance of taste/aroma/appearance/palate, pick an ABV preference, and select beer styles). Method 1 uses CB always and adds CF fold-in once ≥ 3 ratings are collected; Method 2 maps aspect importance levels to quantile targets in the numeric feature sub-space and blends with a style-cluster prior. Both produce a `pd.Series` of beer scores compatible with the hybrid pipeline downstream.
 
@@ -104,7 +104,6 @@ Hybrid CF/CB blending weights are evaluated separately via `py train_models.py -
 - The in-memory online store resets on server restart; a persistent store (e.g. Redis) would allow session state to survive restarts.
 - The SVD fold-in approach for real-time updates is a heuristic approximation; periodic full retraining using the accumulated `new_ratings.csv` is needed for long-term accuracy.
 - CF fold-in for new users requires ≥ 5 session ratings before activating; users with fewer interactions rely on CB only.
-- Hybrid blending weights are currently global; per-user weight adaptation could improve personalisation.
 - The frontend does not yet persist Favorites or rated beers across browser sessions.
 
 &nbsp;<br>

@@ -19,7 +19,9 @@ from backend.online_store import (
 
 NEW_RATINGS_PATH = Path(__file__).resolve().parent.parent / "new_ratings.csv"
 
-STANDARD_CF_WEIGHT = 0.6
+STANDARD_CF_WEIGHT = 0.6   # CF weight for users with >= CF_WEIGHT_FULL_RATINGS ratings
+CF_WEIGHT_MIN = 0.1        # CF weight for new users with no rating history
+CF_WEIGHT_FULL_RATINGS = 50  # rating count at which CF weight reaches STANDARD_CF_WEIGHT
 STANDARD_LAMBDA = 0.25
 STANDARD_GROUP_PENALTY = 0.5
 HYBRID_MULTIPLIER = 3
@@ -463,20 +465,28 @@ async def onboarding_hybrid(payload: dict = Body(...)):
     }
 
 
-def hybridize_candidates(cf_scores: pd.Series, cb_scores: pd.Series, candidate_num: int = 1) -> pd.Series:
+def get_cf_weight(rating_count: int) -> float:
+    """Return CF blend weight scaled linearly by the user's total rating count.
+    Ramps from CF_WEIGHT_MIN (0 ratings) to STANDARD_CF_WEIGHT (CF_WEIGHT_FULL_RATINGS+)."""
+    t = min(rating_count / CF_WEIGHT_FULL_RATINGS, 1.0)
+    return CF_WEIGHT_MIN + t * (STANDARD_CF_WEIGHT - CF_WEIGHT_MIN)
+
+
+def hybridize_candidates(cf_scores: pd.Series, cb_scores: pd.Series, candidate_num: int = 1, cf_weight: float = STANDARD_CF_WEIGHT) -> pd.Series:
     """
-    Selects the top candidate_num recommendation candidates based on a weighted average of the CF and CB 
+    Selects the top candidate_num recommendation candidates based on a weighted average of the CF and CB
     score of each beer
 
     Parameters:
     - cf_scores: Series of CF recommendation scores with beer id as the index.
     - cb_scores: pd.Series of CB recommendation scores with beer id as the index.
     - candidate_num: Number of the top hybrid recommendation candidates to return.
-    
+    - cf_weight: Weight given to CF scores (CB weight = 1 - cf_weight).
+
     Returns:
     - Series containing the top candidate_num beer IDs and their hybrid scores.
     """
-    hybridized = hybrid_scores(cf_scores, cb_scores, STANDARD_CF_WEIGHT)
+    hybridized = hybrid_scores(cf_scores, cb_scores, cf_weight)
     # cull bottom candidates after hybridizing scores
     return hybridized.nlargest(candidate_num)
 
@@ -512,6 +522,10 @@ def get_user_rec_candidates(user_id: str, candidate_num: int) -> pd.Series:
     expanded_candidate_num = HYBRID_MULTIPLIER * candidate_num
     exclude = get_excluded_ids(user_id)
     session_ratings = get_user_ratings(user_id)
+
+    # Compute per-user CF weight: more ratings → more trust in CF signal
+    historical_count = cf.R_sparse.getrow(cf.user_id_to_index[user_id]).nnz if user_id in cf.user_id_to_index else 0
+    cf_weight = get_cf_weight(historical_count + len(session_ratings))
 
     cf_candidates = cb_candidates = None
 
@@ -553,7 +567,7 @@ def get_user_rec_candidates(user_id: str, candidate_num: int) -> pd.Series:
         raise ValueError(f"User '{user_id}' not found in either recommendation pipeline")
 
     if cf_candidates is not None and cb_candidates is not None:
-        hybrid_candidates = hybridize_candidates(cf_candidates, cb_candidates, candidate_num)
+        hybrid_candidates = hybridize_candidates(cf_candidates, cb_candidates, candidate_num, cf_weight)
     elif cf_candidates is not None:
         hybrid_candidates = cf_candidates.nlargest(candidate_num)
     else:
@@ -573,6 +587,9 @@ def get_user_anti_candidates(user_id: str, candidate_num: int) -> pd.Series:
     expanded_candidate_num = HYBRID_MULTIPLIER * candidate_num
 
     exclude = get_excluded_ids(user_id)
+    session_ratings = get_user_ratings(user_id)
+    historical_count = cf.R_sparse.getrow(cf.user_id_to_index[user_id]).nnz if user_id in cf.user_id_to_index else 0
+    cf_weight = get_cf_weight(historical_count + len(session_ratings))
 
     cf_candidates = cb_candidates = None
     try:
@@ -588,7 +605,7 @@ def get_user_anti_candidates(user_id: str, candidate_num: int) -> pd.Series:
         raise ValueError(f"User '{user_id}' not found in either recommendation pipeline")
 
     if cf_candidates is not None and cb_candidates is not None:
-        hybridized = hybrid_scores(cf_candidates, cb_candidates, STANDARD_CF_WEIGHT)
+        hybridized = hybrid_scores(cf_candidates, cb_candidates, cf_weight)
         anti_candidates = hybridized.nsmallest(candidate_num)
     elif cf_candidates is not None:
         anti_candidates = cf_candidates.nsmallest(candidate_num)
