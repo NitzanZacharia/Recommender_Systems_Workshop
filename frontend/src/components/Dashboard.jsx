@@ -3,6 +3,7 @@ import './Dashboard.css';
 import logo from '../assets/logo.png';
 import { getRecommendations, getBeerDetails, getSimilarBeers, submitRating, getSampleUsers, getTopBeers, getAdventurousRecommendations, getAntiRecommendations } from '../services/apiService';
 import { getBeerImage, DEFAULT_BEER_IMAGE } from '../utils/beerImages';
+import NewUserBanner from './NewUserBanner';
 
 const SCALED_MIN = 0.70;
 const SCALED_MAX = 0.97;
@@ -59,7 +60,7 @@ const GroupSwitcher = ({ partyMembers, onApplyMembers, friendDatabase }) => {
 };
 
 // 1. Updated Navbar with toggle
-const Navbar = ({ onLogout, activeTab, setActiveTab }) => {
+const Navbar = ({ onLogout, activeTab, setActiveTab, isDemoMode, setIsDemoMode }) => {
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [showDiscoverMenu, setShowDiscoverMenu] = useState(false);
 
@@ -123,6 +124,19 @@ const Navbar = ({ onLogout, activeTab, setActiveTab }) => {
         
         {/* 3. Shared With Me */}
         <button className="nav-link">Shared With Me</button>
+
+        {/* Demo Toggle Switch */}
+        <div className="demo-toggle-container">
+          <span className={`demo-label ${isDemoMode ? 'active' : ''}`}>Demo Data</span>
+          <label className="switch">
+            <input 
+              type="checkbox" 
+              checked={isDemoMode} 
+              onChange={() => setIsDemoMode(!isDemoMode)} 
+            />
+            <span className="slider"></span>
+          </label>
+        </div>
 
         {/* Profile Hamburger Menu */}
         <div className="profile-menu-container">
@@ -1247,7 +1261,7 @@ const AdventurousPage = ({ userId, onCardClick, favorites, onToggleFav }) => {
   if (!userId) return (
     <div className="empty-state">
       <h2>Switch to Live Mode</h2>
-      <p>Adventurous picks will be available once your recommendations have loaded.</p>
+      <p>Adventurous picks require live recommendations. Toggle off "Demo Data" first.</p>
     </div>
   );
 
@@ -1338,7 +1352,7 @@ const AntiRecommenderPage = ({ userId, onCardClick, favorites, onToggleFav }) =>
   if (!userId) return (
     <div className="empty-state">
       <h2>Switch to Live Mode</h2>
-      <p>Anti-recommendations will be available once your recommendations have loaded.</p>
+      <p>Anti-recommendations require live data. Toggle off "Demo Data" first.</p>
     </div>
   );
 
@@ -1393,11 +1407,12 @@ const AntiRecommenderPage = ({ userId, onCardClick, favorites, onToggleFav }) =>
 };
 
 // 3. Main Dashboard Component
-const RecommenderDashboard = ({ onLogout, coldStartRecs, userId }) => {
+const RecommenderDashboard = ({ data, onLogout, coldStartRecs, userId, isNewUser = false, onNewUserDismiss }) => {
   const [selectedBeer, setSelectedBeer] = useState(null);
   const [favorites, setFavorites] = useState([]);
   const [userRatings, setUserRatings] = useState({});
   const [activeTab, setActiveTab] = useState('home');
+  const [isDemoMode, setIsDemoMode] = useState(!coldStartRecs);
   const [apiData, setApiData] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [apiError, setApiError] = useState(null);
@@ -1409,89 +1424,91 @@ const RecommenderDashboard = ({ onLogout, coldStartRecs, userId }) => {
   const friendDatabase = ["Alex (Lager Lover)", "Sarah (Hops Fanatic)", "David (Stout Guy)"];
 
   useEffect(() => {
-    let cancelled = false;
+    if (!isDemoMode) {
+      let cancelled = false;
 
-    const fetchLiveData = async () => {
-      setIsLoading(true);
-      setApiError(null);
-      try {
-        // 1. Cold-start: show quiz-based recs on first load for a new user.
-        if (coldStartRecs && !coldStartShownRef.current) {
-          const { recommended_ids, scores } = coldStartRecs;
-          const scaled = scaleScores(scores);
-          const details = await Promise.all(
-            recommended_ids.map((id) => getBeerDetails(id))
-          );
-          if (cancelled) return;
-          coldStartShownRef.current = true;
-          const beers = details.map((beer, i) => mapBeerToCard(beer, scaled[i]));
-          setApiData({ swimlanes: [{ id: 'top-matches', title: 'Top Matches for You', beers }] });
-          return;
-        }
-
-        // 2. Real user: fetch recommendations using their actual identity.
-        if (userId) {
-          let fetchedFromRealUser = false;
-          try {
-            const { recommended_ids, scores } = await getRecommendations(userId, 20);
+      const fetchLiveData = async () => {
+        setIsLoading(true);
+        setApiError(null);
+        try {
+          // 1. Cold-start: show quiz-based recs on first load for a new user.
+          if (coldStartRecs && !coldStartShownRef.current) {
+            const { recommended_ids, scores } = coldStartRecs;
             const scaled = scaleScores(scores);
             const details = await Promise.all(
               recommended_ids.map((id) => getBeerDetails(id))
             );
             if (cancelled) return;
+            coldStartShownRef.current = true;
             const beers = details.map((beer, i) => mapBeerToCard(beer, scaled[i]));
-            const sorted = [...beers].sort((a, b) => b.match_score - a.match_score);
-            setApiData({
-              swimlanes: [
-                { id: 'top-matches', title: 'Top Matches for You', beers: sorted.slice(0, 10) },
-                { id: 'also-like', title: 'You Might Also Like', beers: sorted.slice(10) },
-              ],
-            });
-            fetchedFromRealUser = true;
-          } catch {
-            // User not in CF pipeline — fall through to sample user below
+            setApiData({ swimlanes: [{ id: 'top-matches', title: 'Top Matches for You', beers }] });
+            return;
           }
-          if (fetchedFromRealUser) return;
-        }
 
-        // 3. New-user fallback: email not yet in CF pipeline — show a sample user's recs.
-        let sampleId = liveUserIdRef.current;
-        if (!sampleId) {
-          const { user_ids } = await getSampleUsers(1);
-          sampleId = user_ids[0];
-          if (!cancelled) {
-            liveUserIdRef.current = sampleId;
-            setLiveUserId(sampleId);
+          // 2. Real user: fetch recommendations using their actual identity.
+          if (userId) {
+            let fetchedFromRealUser = false;
+            try {
+              const { recommended_ids, scores } = await getRecommendations(userId, 20);
+              const scaled = scaleScores(scores);
+              const details = await Promise.all(
+                recommended_ids.map((id) => getBeerDetails(id))
+              );
+              if (cancelled) return;
+              const beers = details.map((beer, i) => mapBeerToCard(beer, scaled[i]));
+              const sorted = [...beers].sort((a, b) => b.match_score - a.match_score);
+              setApiData({
+                swimlanes: [
+                  { id: 'top-matches', title: 'Top Matches for You', beers: sorted.slice(0, 10) },
+                  { id: 'also-like', title: 'You Might Also Like', beers: sorted.slice(10) },
+                ],
+              });
+              fetchedFromRealUser = true;
+            } catch {
+              // User not in CF pipeline — fall through to sample user below
+            }
+            if (fetchedFromRealUser) return;
           }
+
+          // 3. Demo mode with a sample user (unchanged behaviour).
+          let sampleId = liveUserIdRef.current;
+          if (!sampleId) {
+            const { user_ids } = await getSampleUsers(1);
+            sampleId = user_ids[0];
+            if (!cancelled) {
+              liveUserIdRef.current = sampleId;
+              setLiveUserId(sampleId);
+            }
+          }
+          const { recommended_ids, scores } = await getRecommendations(sampleId, 20);
+          const scaled = scaleScores(scores);
+          const details = await Promise.all(
+            recommended_ids.map((id) => getBeerDetails(id))
+          );
+          if (cancelled) return;
+          const beers = details.map((beer, i) => mapBeerToCard(beer, scaled[i]));
+          const sorted = [...beers].sort((a, b) => b.match_score - a.match_score);
+          setApiData({
+            swimlanes: [
+              { id: 'top-matches', title: 'Top Matches for You', beers: sorted.slice(0, 10) },
+              { id: 'also-like', title: 'You Might Also Like', beers: sorted.slice(10) },
+            ],
+          });
+        } catch (err) {
+          if (cancelled) return;
+          setApiError(err.message);
+          setApiData(null);
+        } finally {
+          if (!cancelled) setIsLoading(false);
         }
-        const { recommended_ids, scores } = await getRecommendations(sampleId, 20);
-        const scaled = scaleScores(scores);
-        const details = await Promise.all(
-          recommended_ids.map((id) => getBeerDetails(id))
-        );
-        if (cancelled) return;
-        const beers = details.map((beer, i) => mapBeerToCard(beer, scaled[i]));
-        const sorted = [...beers].sort((a, b) => b.match_score - a.match_score);
-        setApiData({
-          swimlanes: [
-            { id: 'top-matches', title: 'Top Matches for You', beers: sorted.slice(0, 10) },
-            { id: 'also-like', title: 'You Might Also Like', beers: sorted.slice(10) },
-          ],
-        });
-      } catch (err) {
-        if (cancelled) return;
-        setApiError(err.message);
-        setApiData(null);
-      } finally {
-        if (!cancelled) setIsLoading(false);
-      }
-    };
+      };
 
-    fetchLiveData();
-    return () => { cancelled = true; };
-  }, [ratingVersion, userId, coldStartRecs]);
+      fetchLiveData();
+      return () => { cancelled = true; };
+    }
+  }, [isDemoMode, ratingVersion, userId, coldStartRecs]);
 
-  const activeData = apiData;
+  const activeData = isDemoMode ? data : apiData;
 
   const displaySwimlanes = useMemo(() => {
     if (!activeData || !activeData.swimlanes) return [];
@@ -1521,25 +1538,27 @@ const RecommenderDashboard = ({ onLogout, coldStartRecs, userId }) => {
       [beerId]: { rating, review }
     }));
 
-    const activeUserId = userId || liveUserId;
-    try {
-      if (activeUserId) await submitRating(activeUserId, beerId, rating);
-    } catch {
-      // Non-critical — local state was already updated
+    if (!isDemoMode) {
+      const activeUserId = userId || liveUserId;
+      try {
+        if (activeUserId) await submitRating(activeUserId, beerId, rating);
+      } catch {
+        // Non-critical — local state was already updated
+      }
+
+      setApiData(prev => {
+        if (!prev || !prev.swimlanes) return prev;
+        return {
+          ...prev,
+          swimlanes: prev.swimlanes.map(lane => ({
+            ...lane,
+            beers: lane.beers.filter(b => b.id !== beerId),
+          })),
+        };
+      });
+
+      setRatingVersion(v => v + 1);
     }
-
-    setApiData(prev => {
-      if (!prev || !prev.swimlanes) return prev;
-      return {
-        ...prev,
-        swimlanes: prev.swimlanes.map(lane => ({
-          ...lane,
-          beers: lane.beers.filter(b => b.id !== beerId),
-        })),
-      };
-    });
-
-    setRatingVersion(v => v + 1);
   };
 
   const toggleFavorite = (beerId) => {
@@ -1548,10 +1567,12 @@ const RecommenderDashboard = ({ onLogout, coldStartRecs, userId }) => {
 
   return (
     <div style={{ backgroundColor: '#141414', minHeight: '100vh', paddingBottom: '4rem' }}>
-      <Navbar
-        onLogout={onLogout}
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
+      <Navbar 
+        onLogout={onLogout} 
+        activeTab={activeTab} 
+        setActiveTab={setActiveTab} 
+        isDemoMode={isDemoMode}
+        setIsDemoMode={setIsDemoMode}
       />
       
       <div style={{ padding: '1rem 3rem', display: 'flex', justifyContent: 'flex-end' }}>
@@ -1570,6 +1591,9 @@ const RecommenderDashboard = ({ onLogout, coldStartRecs, userId }) => {
           <>
             {activeTab === 'home' && (
               <>
+                {isNewUser && (
+                  <NewUserBanner onDismiss={onNewUserDismiss} />
+                )}
                 {displaySwimlanes.map((lane) => (
                   <Swimlane
                     key={`${lane.id}-${partyMembers.join(',')}`}
@@ -1604,7 +1628,7 @@ const RecommenderDashboard = ({ onLogout, coldStartRecs, userId }) => {
             {activeTab === 'beer-lists' && <BeerListsPage allBeers={allUniqueBeers} onNavigate={setActiveTab} />}
             {activeTab === 'anti-recommender' && (
               <AntiRecommenderPage
-                userId={userId || liveUserId}
+                userId={liveUserId}
                 onCardClick={(beer) => setSelectedBeer(beer)}
                 favorites={favorites}
                 onToggleFav={toggleFavorite}
@@ -1624,7 +1648,7 @@ const RecommenderDashboard = ({ onLogout, coldStartRecs, userId }) => {
 
         {activeTab === 'adventurous' && (
           <AdventurousPage
-            userId={userId || liveUserId}
+            userId={liveUserId}
             onCardClick={(beer) => setSelectedBeer(beer)}
             favorites={favorites}
             onToggleFav={toggleFavorite}

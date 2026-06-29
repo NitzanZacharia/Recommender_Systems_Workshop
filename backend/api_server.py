@@ -1,4 +1,3 @@
-import json
 import logging
 from pathlib import Path
 
@@ -18,10 +17,11 @@ from backend.online_store import (
 )
 
 
-QUIZ_DATA_PATH = Path(__file__).resolve().parent.parent / "quiz_data.json"
 NEW_RATINGS_PATH = Path(__file__).resolve().parent.parent / "new_ratings.csv"
 
-STANDARD_CF_WEIGHT = 0.6
+STANDARD_CF_WEIGHT = 0.6   # CF weight for users with >= CF_WEIGHT_FULL_RATINGS ratings
+CF_WEIGHT_MIN = 0.1        # CF weight for new users with no rating history
+CF_WEIGHT_FULL_RATINGS = 50  # rating count at which CF weight reaches STANDARD_CF_WEIGHT
 STANDARD_LAMBDA = 0.25
 STANDARD_GROUP_PENALTY = 0.5
 HYBRID_MULTIPLIER = 3
@@ -187,36 +187,6 @@ async def get_anti_recommendations(user_id: str, rec_num: int = DEFAULT_RECOMMEN
         "scores": anti_candidates.values.tolist(),
     }
 
-@app.get("/quiz")
-async def get_quiz():
-    """Serve the onboarding quiz configuration to the frontend."""
-    with open(QUIZ_DATA_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-@app.post("/recommendations/cold-start")
-async def get_cold_start_recommendation(payload: dict = Body(...)):
-    """
-    Receive onboarding quiz answers and return initial recommendations
-    for a brand-new user.
-
-    Expected payload: {"answers": {"hoppy": 5, "dark": 2, "sour": 1, "light": 4}}
-    """
-    quiz_answers = payload.get("answers", {})
-
-    try:
-        recommendations = cold_start.get_cold_start_recommendations(
-            quiz_answers, DEFAULT_RECOMMENDATION_NUM
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-    return {
-        "recommended_ids": recommendations.index.tolist(),
-        "scores": recommendations.values.tolist(),
-    }
-
-
 @app.post("/ratings")
 async def submit_rating(payload: dict = Body(...)):
     """
@@ -276,36 +246,6 @@ async def submit_rating(payload: dict = Body(...)):
     return {"status": "ok", "excluded": str(beer_id)}
 
 
-@app.get("/beers/cold-start-probe")
-async def get_cold_start_probe_beers():
-    """Return ~12 high-rated representative beers (3 per taste cluster) for onboarding."""
-    cluster_styles = {
-        "hoppy": {"IPA", "India Pale Ale", "Double IPA", "American Pale Ale", "Pale Ale"},
-        "dark":  {"Stout", "Porter", "Imperial Stout", "Brown Ale"},
-        "sour":  {"Sour Ale", "Wild Ale", "Lambic", "Fruit Beer", "Sour"},
-        "light": {"Lager", "Pilsner", "Light Lager", "Pale Lager", "Wheat Beer"},
-    }
-    BEERS_PER_CLUSTER = 3
-    result = []
-    seen_ids: set = set()
-    for cluster_id, styles in cluster_styles.items():
-        pool = cb.item_profiles[cb.item_profiles["beer_style"].isin(styles)]
-        top = pool.nlargest(BEERS_PER_CLUSTER, "avg_overall_rating")
-        for _, row in top.iterrows():
-            bid = str(row["beer_id"])
-            if bid not in seen_ids:
-                seen_ids.add(bid)
-                result.append({
-                    "beer_id": bid,
-                    "beer_name": str(row["beer_name"]),
-                    "beer_style": str(row["beer_style"]),
-                    "beer_abv": float(row["beer_abv"]),
-                    "avg_overall_rating": float(row["avg_overall_rating"]),
-                    "cluster": cluster_id,
-                })
-    return result
-
-
 @app.get("/beers/top")
 async def get_top_beers(n: int = 50):
     """Return the top-N highest-rated beers from live artifact data."""
@@ -325,6 +265,24 @@ async def get_top_beers(n: int = 50):
         }
         for _, row in df.iterrows()
     ]
+
+
+@app.get("/beers/search")
+async def search_beers(q: str, limit: int = 20):
+    """Search beers by name substring."""
+    if len(q) < 2:
+        raise HTTPException(status_code=400, detail="Query must be at least 2 characters.")
+    limit = min(limit, 50)
+    mask = cb.item_profiles["beer_name"].str.contains(q, case=False, na=False, regex=False)
+    matches = cb.item_profiles[mask]
+    results = matches.head(limit)[["beer_id", "beer_name", "beer_style", "beer_abv", "avg_overall_rating"]].copy()
+    results["beer_abv"] = pd.to_numeric(results["beer_abv"], errors="coerce").round(1)
+    results["avg_overall_rating"] = pd.to_numeric(results["avg_overall_rating"], errors="coerce").round(2)
+    return {
+        "results": results.to_dict(orient="records"),
+        "total_matches": int(mask.sum()),
+        "showing": len(results),
+    }
 
 
 @app.get("/beers/{beer_id}")
@@ -388,20 +346,147 @@ async def get_similar_beers(beer_id: str, n: int = DEFAULT_RECOMMENDATION_NUM):
     }
 
 
-def hybridize_candidates(cf_scores: pd.Series, cb_scores: pd.Series, candidate_num: int = 1) -> pd.Series:
+@app.post("/onboarding/from-attributes")
+async def onboarding_from_attributes(payload: dict = Body(...)):
     """
-    Selects the top candidate_num recommendation candidates based on a weighted average of the CF and CB 
+    Return cold-start recommendations for a new user based on taste attribute
+    preferences and preferred beer styles.
+
+    Expected payload:
+    {
+        "taste": 4, "aroma": 3, "appearance": 2, "palate": 5,
+        "abv_pref": "medium",
+        "styles": ["IPA", "Pale Ale"],
+        "n": 10
+    }
+    """
+    taste = float(payload.get("taste", 3))
+    aroma = float(payload.get("aroma", 3))
+    appearance = float(payload.get("appearance", 3))
+    palate = float(payload.get("palate", 3))
+    abv_pref = payload.get("abv_pref", "any")
+    styles = payload.get("styles", [])
+    n = int(payload.get("n", DEFAULT_RECOMMENDATION_NUM))
+
+    for val, name in [(taste, "taste"), (aroma, "aroma"), (appearance, "appearance"), (palate, "palate")]:
+        if not (1 <= val <= 5):
+            raise HTTPException(status_code=422, detail=f"{name} must be between 1 and 5.")
+    if abv_pref not in ("low", "medium", "high", "any"):
+        raise HTTPException(status_code=422, detail="abv_pref must be 'low', 'medium', 'high', or 'any'.")
+    if not styles:
+        raise HTTPException(status_code=422, detail="At least one style must be provided.")
+
+    try:
+        scores = cold_start.cold_start_from_attributes(
+            taste, aroma, appearance, palate, abv_pref, styles, n * HYBRID_MULTIPLIER
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    reranked = rerank_recommendations(scores, n)
+    return {
+        "recommended_ids": reranked.index.tolist(),
+        "scores": reranked.values.tolist(),
+    }
+
+
+@app.post("/onboarding/hybrid")
+async def onboarding_hybrid(payload: dict = Body(...)):
+    """
+    Return cold-start recommendations by blending rated-beers signals (M1)
+    and taste attribute signals (M2).
+
+    Expected payload:
+    {
+        "rated_beers": {"beer_id_1": 5, "beer_id_2": 3},
+        "attributes": {
+            "taste": 4, "aroma": 3, "appearance": 2, "palate": 5,
+            "abv_pref": "medium", "styles": ["IPA"]
+        },
+        "n": 10
+    }
+    At least one of rated_beers or attributes must be provided.
+    """
+    rated_beers = payload.get("rated_beers", {})
+    attributes = payload.get("attributes", None)
+    n = int(payload.get("n", DEFAULT_RECOMMENDATION_NUM))
+
+    if not rated_beers and not attributes:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one of rated_beers or attributes must be provided.",
+        )
+
+    # M1 scores from rated beers
+    m1_scores = None
+    if rated_beers:
+        try:
+            m1_scores = cold_start.cold_start_from_ratings(
+                rated_beers, n * HYBRID_MULTIPLIER
+            )
+        except ValueError:
+            m1_scores = None
+
+    # M2 scores from attribute preferences
+    m2_scores = None
+    if attributes:
+        try:
+            m2_scores = cold_start.cold_start_from_attributes(
+                float(attributes.get("taste", 3)),
+                float(attributes.get("aroma", 3)),
+                float(attributes.get("appearance", 3)),
+                float(attributes.get("palate", 3)),
+                attributes.get("abv_pref", "any"),
+                attributes.get("styles", []),
+                n * HYBRID_MULTIPLIER,
+            )
+        except Exception:
+            m2_scores = None
+
+    # Blend M1 and M2
+    if m1_scores is not None and m2_scores is not None:
+        alpha = min(len(rated_beers) / 5.0, 1.0)
+        all_ids = m1_scores.index.union(m2_scores.index)
+        m1_aligned = m1_scores.reindex(all_ids, fill_value=0.0)
+        m2_aligned = m2_scores.reindex(all_ids, fill_value=0.0)
+        blended = alpha * m1_aligned + (1 - alpha) * m2_aligned
+        scores = blended.nlargest(n * HYBRID_MULTIPLIER)
+    elif m1_scores is not None:
+        scores = m1_scores
+    elif m2_scores is not None:
+        scores = m2_scores
+    else:
+        raise HTTPException(status_code=500, detail="Could not generate recommendations.")
+
+    reranked = rerank_recommendations(scores, n)
+    return {
+        "recommended_ids": reranked.index.tolist(),
+        "scores": reranked.values.tolist(),
+    }
+
+
+def get_cf_weight(rating_count: int) -> float:
+    """Return CF blend weight scaled linearly by the user's total rating count.
+    Ramps from CF_WEIGHT_MIN (0 ratings) to STANDARD_CF_WEIGHT (CF_WEIGHT_FULL_RATINGS+)."""
+    t = min(rating_count / CF_WEIGHT_FULL_RATINGS, 1.0)
+    return CF_WEIGHT_MIN + t * (STANDARD_CF_WEIGHT - CF_WEIGHT_MIN)
+
+
+def hybridize_candidates(cf_scores: pd.Series, cb_scores: pd.Series, candidate_num: int = 1, cf_weight: float = STANDARD_CF_WEIGHT) -> pd.Series:
+    """
+    Selects the top candidate_num recommendation candidates based on a weighted average of the CF and CB
     score of each beer
 
     Parameters:
     - cf_scores: Series of CF recommendation scores with beer id as the index.
     - cb_scores: pd.Series of CB recommendation scores with beer id as the index.
     - candidate_num: Number of the top hybrid recommendation candidates to return.
-    
+    - cf_weight: Weight given to CF scores (CB weight = 1 - cf_weight).
+
     Returns:
     - Series containing the top candidate_num beer IDs and their hybrid scores.
     """
-    hybridized = hybrid_scores(cf_scores, cb_scores, STANDARD_CF_WEIGHT)
+    hybridized = hybrid_scores(cf_scores, cb_scores, cf_weight)
     # cull bottom candidates after hybridizing scores
     return hybridized.nlargest(candidate_num)
 
@@ -437,6 +522,10 @@ def get_user_rec_candidates(user_id: str, candidate_num: int) -> pd.Series:
     expanded_candidate_num = HYBRID_MULTIPLIER * candidate_num
     exclude = get_excluded_ids(user_id)
     session_ratings = get_user_ratings(user_id)
+
+    # Compute per-user CF weight: more ratings → more trust in CF signal
+    historical_count = cf.R_sparse.getrow(cf.user_id_to_index[user_id]).nnz if user_id in cf.user_id_to_index else 0
+    cf_weight = get_cf_weight(historical_count + len(session_ratings))
 
     cf_candidates = cb_candidates = None
 
@@ -478,7 +567,7 @@ def get_user_rec_candidates(user_id: str, candidate_num: int) -> pd.Series:
         raise ValueError(f"User '{user_id}' not found in either recommendation pipeline")
 
     if cf_candidates is not None and cb_candidates is not None:
-        hybrid_candidates = hybridize_candidates(cf_candidates, cb_candidates, candidate_num)
+        hybrid_candidates = hybridize_candidates(cf_candidates, cb_candidates, candidate_num, cf_weight)
     elif cf_candidates is not None:
         hybrid_candidates = cf_candidates.nlargest(candidate_num)
     else:
@@ -498,6 +587,9 @@ def get_user_anti_candidates(user_id: str, candidate_num: int) -> pd.Series:
     expanded_candidate_num = HYBRID_MULTIPLIER * candidate_num
 
     exclude = get_excluded_ids(user_id)
+    session_ratings = get_user_ratings(user_id)
+    historical_count = cf.R_sparse.getrow(cf.user_id_to_index[user_id]).nnz if user_id in cf.user_id_to_index else 0
+    cf_weight = get_cf_weight(historical_count + len(session_ratings))
 
     cf_candidates = cb_candidates = None
     try:
@@ -513,7 +605,7 @@ def get_user_anti_candidates(user_id: str, candidate_num: int) -> pd.Series:
         raise ValueError(f"User '{user_id}' not found in either recommendation pipeline")
 
     if cf_candidates is not None and cb_candidates is not None:
-        hybridized = hybrid_scores(cf_candidates, cb_candidates, STANDARD_CF_WEIGHT)
+        hybridized = hybrid_scores(cf_candidates, cb_candidates, cf_weight)
         anti_candidates = hybridized.nsmallest(candidate_num)
     elif cf_candidates is not None:
         anti_candidates = cf_candidates.nsmallest(candidate_num)
