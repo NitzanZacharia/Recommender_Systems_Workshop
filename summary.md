@@ -36,6 +36,8 @@ Both JSON files are ingested via `data_processing/process_json.py` into PostgreS
 
 - **Sparse SVD (scipy)** — matrix factorisation for collaborative filtering; operates entirely on sparse matrices to handle tens of thousands of users × beers without memory issues.
 - **TF-IDF + cosine similarity (scikit-learn)** — content-based similarity across beer style, brewery, and textual features.
+- **Google Gemini Vision API (`google-genai` SDK)** — extracts beer names and brewery names from uploaded menu photos; uses `gemini-2.5-flash-lite` (primary, 500 req/day free tier) with `gemini-2.5-flash` as fallback.
+- **rapidfuzz** — fuzzy string matching used to map Gemini-extracted beer names to catalog entries; tolerant of OCR noise, formatting variants, and volume descriptors (e.g. "e 33cl").
 
 &nbsp;<br>
 
@@ -45,6 +47,7 @@ Both JSON files are ingested via `data_processing/process_json.py` into PostgreS
 - **Content-Based (TF-IDF + cosine similarity)** — represents each beer as a feature vector and finds similar beers based on style, brewery, and text. Updates continuously as the user rates beers.
 - **Hybrid blending** — CF and CB scores are linearly blended for the main recommendation feed. The CF weight is adapted per-user based on rating count: new users get more CB weight (content signal is more reliable with sparse history), while experienced users get more CF weight (collaborative signal improves with more data). Weight ramps linearly from 0.1 (0 ratings) to 0.6 (≥ 50 ratings).
 - **MMR re-ranking** — Maximal Marginal Relevance applied to the hybrid scores to promote diversity in the recommendations.
+- **Menu-scan scoring** — when a user uploads a menu photo, beer names are extracted via Gemini vision and fuzzy-matched to the catalog; only the matched subset (~8–12 beers) is scored by slicing the CB feature matrix and CF latent factors directly, bypassing full 70k-beer scoring entirely. Results are ranked by the user's personal hybrid score.
 - **Cold-start (two-method onboarding)** — new users choose between Method 1 (search for known beers and rate them 1–5; minimum 3 ratings required) or Method 2 (rate the importance of taste/aroma/appearance/palate, pick an ABV preference, and select beer styles). Method 1 uses CB always and adds CF fold-in once ≥ 3 ratings are collected; Method 2 maps aspect importance levels to quantile targets in the numeric feature sub-space and blends with a style-cluster prior. Both produce a `pd.Series` of beer scores compatible with the hybrid pipeline downstream.
 
 &nbsp;<br>
@@ -79,6 +82,7 @@ The system has three main layers: a React frontend, a FastAPI backend, and a pai
 - **Milestone 7:** Improved React + Vite frontend Favorites, Discover, Top 50, and Adventurous tabs; added support for using real data and Demo Data toggle for standalone exploration.
 - **Milestone 8:** Added MMR re-ranking for diversity, group recommendations endpoint, and CF weight tuning sweep.
 - **Milestone 9:** Added real-time feedback loop: immediate exclusion of rated beers, heuristic score adjustments, and SVD fold-in for live recommendation updates without retraining.
+- **Milestone 10:** Added Scan Menu feature — Gemini vision API extracts beer names from uploaded menu photos; rapidfuzz maps them to the catalog; a dedicated endpoint scores only the matched beers by slicing CB/CF matrices directly.
 
 &nbsp;<br>
 
@@ -98,6 +102,7 @@ Hybrid CF/CB blending weights are evaluated separately via `py train_models.py -
 - **Demo Data toggle** — the frontend ships with bundled sample beers so the UI can be previewed without the backend or database running.
 - **Group recommendations** — `GET /recommendations/group` generates hybrid recommendations for a set of users simultaneously.
 - **% Match badges** — every beer card displays a personalised hybrid score, a community average rating, or a rank badge depending on the tab.
+- **Scan Menu** — upload a photo of a bar menu; Gemini vision extracts beer names, fuzzy matching maps them to the catalog, and the system returns only those beers ranked by the user's personal taste score. Appears as a "Scan Menu" button on the Home tab.
 
 ## Open Issues, Limitations, and Future Work
 

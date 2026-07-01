@@ -5,7 +5,7 @@
 - **Technology:** React + Vite
 - **Responsibilities:** Display the beer recommendation dashboard; collect user interactions (ratings, onboarding inputs, search/filter inputs); manage local state for Favorites and rated beers; toggle between Demo Data and live backend mode.
 - **Interactions:**
-  - Calls backend APIs via `src/services/apiService.js` (e.g. `/recommendations/{user_id}`, `/beers/top`, `/beers/search`, `/onboarding/from-attributes`, `/ratings`).
+  - Calls backend APIs via `src/services/apiService.js` (e.g. `/recommendations/{user_id}`, `/beers/top`, `/beers/search`, `/onboarding/from-attributes`, `/ratings`, `POST /recommendations/menu-upload`).
   - Receives JSON responses from the backend and renders beer cards, match badges, and swimlanes.
 - **More info:** Ships with bundled sample beers so the UI can be previewed without the backend running (Demo Data toggle). Dynamically fetches a valid user ID from `GET /users/sample` when switching to live mode — no hardcoded IDs.
 - **Source code:** [`/frontend/src/`](./frontend/src/)
@@ -75,5 +75,25 @@
   - Loads CF and CB pipeline artifacts from `artifacts/` at startup.
   - Dispatches to the appropriate pipeline based on the endpoint called.
   - Returns JSON recommendation lists with beer metadata and match scores.
-- **More info:** Hybrid blending uses a per-user adaptive CF weight that ramps linearly from 0.1 (new users, no rating history) to 0.6 (experienced users, ≥ 50 ratings), computed at request time from the user's historical + session rating count. The upper bound `STANDARD_CF_WEIGHT = 0.6` is tunable via `py train_models.py --tune-weights`. Supports development (`fastapi dev`, auto-reload) and production (`fastapi run`) modes.
+- **More info:** Hybrid blending uses a per-user adaptive CF weight that ramps linearly from 0.1 (new users, no rating history) to 0.6 (experienced users, ≥ 50 ratings), computed at request time from the user's historical + session rating count. The upper bound `STANDARD_CF_WEIGHT = 0.6` is tunable via `py train_models.py --tune-weights`. Supports development (`fastapi dev`, auto-reload) and production (`fastapi run`) modes. `POST /recommendations/menu-upload` accepts a multipart menu image, orchestrates the vision and matcher modules, and scores only the matched beers without invoking the full recommendation pipeline.
 - **Source code:** [`/backend/api_server.py`](./backend/api_server.py)
+
+## Menu Vision Module
+
+- **Technology:** Google Gemini Vision API (`google-genai` SDK)
+- **Responsibilities:** Sends a menu image to Gemini and parses the response into a list of `{name, brewery}` dicts.
+- **Interactions:**
+  - Called by the `POST /recommendations/menu-upload` endpoint in `backend/api_server.py`.
+  - Returns `[]` on any error so the endpoint degrades gracefully without affecting other flows.
+- **More info:** Uses a singleton `genai.Client` initialised from the `GOOGLE_API_KEY` environment variable (must be set in the terminal before starting the server). Tries `gemini-2.5-flash-lite` first; falls back to `gemini-2.5-flash` on 503.
+- **Source code:** [`/menu_vision.py`](./menu_vision.py)
+
+## Menu Matcher Module
+
+- **Technology:** rapidfuzz, pandas
+- **Responsibilities:** Fuzzy-matches extracted beer names against the item profiles catalog and returns the matched beer IDs.
+- **Interactions:**
+  - Called by `POST /recommendations/menu-upload` with the extracted names from the vision module.
+  - Only matches against beers that have CB feature vectors, ensuring all matches are scorable.
+- **More info:** Normalises both sides by stripping noise words (`brewery`, `brewing`, `co`, `lager`, etc.) before comparing with `fuzz.token_set_ratio` (threshold 75). Deduplicates matches automatically.
+- **Source code:** [`/menu_matcher.py`](./menu_matcher.py)
