@@ -3,7 +3,7 @@
 
 # Beer Recommender System
 
-A beer recommendation system implementing Collaborative Filtering (CF) and Content-Based (CB) pipelines on the BeerAdvocate and RateBeer datasets. The system offers personalised recommendations, cold-start onboarding, real-time feedback updates, Rubi's Daily Recommendation, and a full React frontend.
+A beer recommendation system implementing Collaborative Filtering (CF) and Content-Based (CB) pipelines on the BeerAdvocate and RateBeer datasets. The system offers personalised recommendations, cold-start onboarding, real-time feedback updates, and a full React frontend.
 
 &nbsp;<br>
 
