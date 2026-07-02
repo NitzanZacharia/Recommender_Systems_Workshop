@@ -13,6 +13,7 @@ Output format matches cf_pipeline.py:
 - values = recommendation score
 """
 
+import html
 from pathlib import Path
 
 import numpy as np
@@ -167,6 +168,12 @@ else:
     beer_id_to_index = {beer_id: idx for idx, beer_id in enumerate(beer_ids)}
 
     print(f"Beer feature matrix: {beer_feature_matrix.shape}")
+
+# Source data (BeerAdvocate/RateBeer scrapes) has some beer names stored with
+# un-decoded HTML entities (e.g. "&#40;18%&#41;" instead of "(18%)").
+item_profiles["beer_name"] = item_profiles["beer_name"].apply(
+    lambda name: html.unescape(name) if isinstance(name, str) else name
+)
 
 
 def to_dense_array(matrix):
