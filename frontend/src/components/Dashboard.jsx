@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import './Dashboard.css';
 import logo from '../assets/logo.png';
+import rubiBadge from '../assets/rubi_sym_circ.jpeg';
 import { getRecommendations, getBeerDetails, getSimilarBeers, submitRating, getSampleUsers, getTopBeers, getAdventurousRecommendations, getAntiRecommendations, uploadMenuImage } from '../services/apiService';
 import { getBeerImage, DEFAULT_BEER_IMAGE } from '../utils/beerImages';
 import NewUserBanner from './NewUserBanner';
@@ -453,6 +454,36 @@ const Swimlane = ({ title, beers, onCardClick, favorites, onToggleFav }) => {
             onToggleFav={onToggleFav}
           />
         ))}
+      </div>
+    </div>
+  );
+};
+
+// Rubi's Daily Recommendation — hero card highlighting one beer not already in the swimlanes below
+const RubiDailyCard = ({ beer, onCardClick }) => {
+  if (!beer) return null;
+  const matchPercentage = Math.round(beer.match_score * 100);
+
+  return (
+    <div className="rubi-daily-card" onClick={() => onCardClick(beer)}>
+      <img src={rubiBadge} alt="Rubi" className="rubi-daily-badge" />
+      <img
+        src={beer.image_url}
+        alt={beer.name}
+        className="rubi-daily-image"
+        onError={(e) => { e.currentTarget.onerror = null; e.currentTarget.src = DEFAULT_BEER_IMAGE; }}
+      />
+      <div className="rubi-daily-info">
+        <div className="rubi-daily-title">Rubi's Daily Recommendation</div>
+        <h3 className="rubi-daily-beer-name">{beer.name}</h3>
+        <div className="rubi-daily-meta">{beer.style} • {beer.abv}% ABV</div>
+        <div className="rubi-daily-stats">
+          <span className="rubi-daily-match">{matchPercentage}% Match</span>
+          <span className="rubi-daily-rating">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="#E67E22" stroke="#E67E22" strokeWidth="2"><path d="M10 2v5l-2 3v10a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-10l-2-3V2z"></path><path d="M10 2h4"></path></svg>
+            {typeof beer.rating === 'number' ? beer.rating.toFixed(1) : "N/A"}
+          </span>
+        </div>
       </div>
     </div>
   );
@@ -1521,6 +1552,7 @@ const RecommenderDashboard = ({ onLogout, coldStartRecs, userId, isNewUser = fal
   const [userRatings, setUserRatings] = useState({});
   const [activeTab, setActiveTab] = useState('home');
   const [apiData, setApiData] = useState(null);
+  const [dailyBeer, setDailyBeer] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [apiError, setApiError] = useState(null);
   const [ratingVersion, setRatingVersion] = useState(0);
@@ -1565,7 +1597,7 @@ const RecommenderDashboard = ({ onLogout, coldStartRecs, userId, isNewUser = fal
         if (userId) {
           let fetchedFromRealUser = false;
           try {
-            const { recommended_ids, scores } = await getRecommendations(userId, 20);
+            const { recommended_ids, scores } = await getRecommendations(userId, 21);
             const scaled = scaleScores(scores);
             const details = await Promise.all(
               recommended_ids.map((id) => getBeerDetails(id))
@@ -1576,9 +1608,10 @@ const RecommenderDashboard = ({ onLogout, coldStartRecs, userId, isNewUser = fal
             setApiData({
               swimlanes: [
                 { id: 'top-matches', title: 'Top Matches for You', beers: sorted.slice(0, 10) },
-                { id: 'also-like', title: 'You Might Also Like', beers: sorted.slice(10) },
+                { id: 'also-like', title: 'You Might Also Like', beers: sorted.slice(10, 20) },
               ],
             });
+            setDailyBeer(sorted[20] ?? null);
             fetchedFromRealUser = true;
           } catch {
             // User not in CF pipeline — fall through to sample user below
@@ -1596,7 +1629,7 @@ const RecommenderDashboard = ({ onLogout, coldStartRecs, userId, isNewUser = fal
             setLiveUserId(sampleId);
           }
         }
-        const { recommended_ids, scores } = await getRecommendations(sampleId, 20);
+        const { recommended_ids, scores } = await getRecommendations(sampleId, 21);
         const scaled = scaleScores(scores);
         const details = await Promise.all(
           recommended_ids.map((id) => getBeerDetails(id))
@@ -1607,13 +1640,15 @@ const RecommenderDashboard = ({ onLogout, coldStartRecs, userId, isNewUser = fal
         setApiData({
           swimlanes: [
             { id: 'top-matches', title: 'Top Matches for You', beers: sorted.slice(0, 10) },
-            { id: 'also-like', title: 'You Might Also Like', beers: sorted.slice(10) },
+            { id: 'also-like', title: 'You Might Also Like', beers: sorted.slice(10, 20) },
           ],
         });
+        setDailyBeer(sorted[20] ?? null);
       } catch (err) {
         if (cancelled) return;
         setApiError(err.message);
         setApiData(null);
+        setDailyBeer(null);
       } finally {
         if (!cancelled) setIsLoading(false);
       }
@@ -1755,16 +1790,19 @@ const RecommenderDashboard = ({ onLogout, coldStartRecs, userId, isNewUser = fal
                     />
                   </>
                 ) : (
-                  displaySwimlanes.map((lane) => (
-                    <Swimlane
-                      key={`${lane.id}-${partyMembers.join(',')}`}
-                      title={lane.title}
-                      beers={lane.beers.filter(b => !userRatings[b.id])}
-                      onCardClick={(beer) => setSelectedBeer(beer)}
-                      favorites={favorites}
-                      onToggleFav={toggleFavorite}
-                    />
-                  ))
+                  <>
+                    <RubiDailyCard beer={dailyBeer} onCardClick={(beer) => setSelectedBeer(beer)} />
+                    {displaySwimlanes.map((lane) => (
+                      <Swimlane
+                        key={`${lane.id}-${partyMembers.join(',')}`}
+                        title={lane.title}
+                        beers={lane.beers.filter(b => !userRatings[b.id])}
+                        onCardClick={(beer) => setSelectedBeer(beer)}
+                        favorites={favorites}
+                        onToggleFav={toggleFavorite}
+                      />
+                    ))}
+                  </>
                 )}
               </>
             )}

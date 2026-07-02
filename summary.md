@@ -83,6 +83,7 @@ The system has three main layers: a React frontend, a FastAPI backend, and a pai
 - **Milestone 8:** Added MMR re-ranking for diversity, group recommendations endpoint, and CF weight tuning sweep.
 - **Milestone 9:** Added real-time feedback loop: immediate exclusion of rated beers, heuristic score adjustments, and SVD fold-in for live recommendation updates without retraining.
 - **Milestone 10:** Added Scan Menu feature — Gemini vision API extracts beer names from uploaded menu photos; rapidfuzz maps them to the catalog; a dedicated endpoint scores only the matched beers by slicing CB/CF matrices directly.
+- **Milestone 11:** Added Rubi's Daily Recommendation — a hero card on the Home tab highlighting a single standout beer pick, guaranteed not to overlap the swimlanes shown below it.
 
 &nbsp;<br>
 
@@ -103,6 +104,7 @@ Hybrid CF/CB blending weights are evaluated separately via `py train_models.py -
 - **Group recommendations** — `GET /recommendations/group` generates hybrid recommendations for a set of users simultaneously.
 - **% Match badges** — every beer card displays a personalised hybrid score, a community average rating, or a rank badge depending on the tab.
 - **Scan Menu** — upload a photo of a bar menu; Gemini vision extracts beer names, fuzzy matching maps them to the catalog, and the system returns only those beers ranked by the user's personal taste score. Appears as a "Scan Menu" button on the Home tab.
+- **Rubi's Daily Recommendation** — a highlighted hero card on the Home tab surfacing one standout beer pick, distinct from the "Top Matches" and "You Might Also Like" swimlanes below it. Reuses the existing hybrid recommendation feed (requests one extra beer beyond what's shown in the swimlanes) so the pick never duplicates a beer already visible on the page; clicking it opens the same beer detail modal used elsewhere in the app.
 
 ## Open Issues, Limitations, and Future Work
 
