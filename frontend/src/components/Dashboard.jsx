@@ -269,10 +269,10 @@ const BeerModal = ({ beer, onClose, userRatingData, onSubmitReview, onCardClick,
             {matchPercentage}% Match
           </div>
 
-          {/* NEW: Title and Rating locked onto the exact same line */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h2 style={{ margin: 0 }}>{beer.name}</h2>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '1.2rem', fontWeight: 'bold', color: '#fff' }}>
+          {/* NEW: Title and Rating safely contained with text wrapping */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem' }}>
+          <h2 style={{ margin: 0, wordBreak: 'break-word', whiteSpace: 'normal', flex: 1 }}>{beer.name}</h2>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '1.2rem', fontWeight: 'bold', color: '#fff', flexShrink: 0 }}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="#E67E22" stroke="#E67E22"><path d="M10 2v5l-2 3v10a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-10l-2-3V2z"></path><path d="M10 2h4"></path></svg>
               {typeof beer.rating === 'number' ? beer.rating.toFixed(1) : "New"}
               <span style={{ fontSize: '0.7rem', fontWeight: 'normal', color: '#aaa' }}>Avg Rating</span>
@@ -350,19 +350,29 @@ const BeerModal = ({ beer, onClose, userRatingData, onSubmitReview, onCardClick,
               ))}
             </div>
             <textarea 
-              className="review-textarea"
-              style={{ resize: 'none' }} 
-              placeholder="What did you think of this brew? (Optional)"
-              value={review}
-              onChange={(e) => setReview(e.target.value)}
-              spellCheck={false}
-              data-gramm={false}
-            />
-            <button 
-              className="submit-review-btn" 
-              disabled={rating === 0}
-              onClick={handleSubmit}
-            >
+          className="review-textarea"
+          style={{ 
+          resize: 'none',
+          backgroundColor: review ? 'transparent' : '', 
+          color: review ? '#E67E22' : '',
+          width: '100%', 
+          boxSizing: 'border-box'
+          }} 
+            placeholder="What did you think of this brew? (Optional)"
+            value={review}
+            onChange={(e) => setReview(e.target.value)}
+            spellCheck={false}
+            data-gramm={false}
+          />
+          <button 
+            className="submit-review-btn" 
+            disabled={rating === 0}
+            onClick={handleSubmit}
+            style={{ 
+              width: '100%', 
+              boxSizing: 'border-box' 
+            }}
+                      >
               Save Rating
             </button>
           </div>
@@ -382,8 +392,10 @@ const BeerModal = ({ beer, onClose, userRatingData, onSubmitReview, onCardClick,
                     className="similar-card"
                     onClick={() => onCardClick && onCardClick(sb)}
                   >
-                    <img src={sb.image_url} alt={sb.name} />
-                    <span>{sb.name}</span>
+                    <img src={sb.image_url} alt={sb.name} style={{ flexShrink: 0 }} />
+                    <span style={{ wordBreak: 'break-word', whiteSpace: 'normal', width: '100%', display: 'block' }}>
+                    {sb.name}
+                  </span>
                   </div>
                 ))}
               </div>
@@ -744,8 +756,8 @@ const BeerListsPage = ({ allBeers = [], onNavigate }) => {
               <div style={{ overflowY: 'auto', flex: 1, display: 'grid', gap: '0.5rem' }}>
                 {availableBeersToAdd.map(beer => (
                   <div key={beer.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem', backgroundColor: '#222', borderRadius: '6px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                      <img src={beer.image_url} alt={beer.name} style={{ width: '30px', height: '30px', borderRadius: '4px' }} />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flex: 1, minWidth: 0, paddingRight: '1rem' }}>
+                      <img src={beer.image_url} alt={beer.name} style={{ width: '30px', height: '30px', borderRadius: '4px', flexShrink: 0 }} />
                       <span style={{ color: '#fff', fontSize: '0.9rem' }}>{beer.name}</span>
                     </div>
                     <button onClick={() => handleAddBeerToList(beer)} style={{ backgroundColor: '#E67E22', border: 'none', color: '#fff', padding: '0.3rem 0.8rem', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>
