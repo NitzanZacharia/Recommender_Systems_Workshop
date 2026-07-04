@@ -2,13 +2,14 @@ import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import './Dashboard.css';
 import logo from '../assets/logo.png';
 import rubiBadge from '../assets/rubi_sym_circ.jpeg';
-import { getRecommendations, getBeerDetails, getSimilarBeers, submitRating, getTopBeers, getAdventurousRecommendations, getAntiRecommendations, uploadMenuImage } from '../services/apiService';
+import { getRecommendations, getBeerDetails, getSimilarBeers, submitRating, getTopBeers, getAdventurousRecommendations, getSingleMatchScore, getAntiRecommendations, uploadMenuImage } from '../services/apiService';
 import { getBeerImage, DEFAULT_BEER_IMAGE } from '../utils/beerImages';
 import NewUserBanner from './NewUserBanner';
 import UserProfilePage from './UserProfilePage';
 import SharedWithMePage from './SharedWithMePage';
 import { saveRating as persistRating, getUserRecord, getRegisteredUsers, shareBeerWithUser } from '../services/authService';
 import MenuUpload from './MenuUpload';
+import FoodFellas from '../assets/FoodFellas.png';
 
 const SCALED_MIN = 0.70;
 const SCALED_MAX = 0.97;
@@ -189,54 +190,87 @@ export const BottleIcon = ({ filled, onMouseEnter, onMouseLeave, onClick }) => (
   </svg>
 );
 
-// --- Modal Component with Review System ---
+const normalizeScore = (score) => {
+  if (score === null || score === undefined) return null;
+  const val = score > 1 ? score : score * 100;
+  return Math.round(val);
+};
+
 const BeerModal = ({ beer, onClose, userRatingData, onSubmitReview, onCardClick, userId, onShareSent }) => {
+  // 1. ALL HOOKS DEFINED FIRST (No conditions here)
   const [hoverRating, setHoverRating] = useState(0);
   const [rating, setRating] = useState(userRatingData?.rating || 0);
   const [review, setReview] = useState(userRatingData?.review || '');
   const [shareOpen, setShareOpen] = useState(false);
   const [shareRecipient, setShareRecipient] = useState('');
   const [shareNote, setShareNote] = useState('');
-  const [shareStatus, setShareStatus] = useState(null); // null | 'sent' | 'error'
-  const registeredUsers = userId ? getRegisteredUsers(userId) : [];
+  const [shareStatus, setShareStatus] = useState(null); 
   const [similarBeers, setSimilarBeers] = useState([]);
   const [loadingSimilar, setLoadingSimilar] = useState(false);
+  const [dynamicScore, setDynamicScore] = useState(null);
+  const [isScoring, setIsScoring] = useState(false);
+  
+  const registeredUsers = userId ? getRegisteredUsers(userId) : [];
 
+  // 2. FETCH SIMILAR BEERS (Hook is always called)
   useEffect(() => {
-    if (!beer) return;
+    if (!beer?.id) return; // Guard logic is inside, not outside
+    
     let cancelled = false;
-
     const fetchSimilar = async () => {
       setLoadingSimilar(true);
-      setSimilarBeers([]);
       try {
         const { similar } = await getSimilarBeers(beer.id, 3);
-        const details = await Promise.all(
-          similar.map((s) => getBeerDetails(s.beer_id))
-        );
-        if (cancelled) return;
-        setSimilarBeers(details.map((d, i) => mapBeerToCard(d, similar[i].score)));
+        const details = await Promise.all(similar.map((s) => getBeerDetails(s.beer_id)));
+        if (!cancelled) setSimilarBeers(details.map((d, i) => mapBeerToCard(d, similar[i].score)));
       } catch {
-        // Similar beers are non-critical; fail silently.
         if (!cancelled) setSimilarBeers([]);
       } finally {
         if (!cancelled) setLoadingSimilar(false);
       }
     };
-
     fetchSimilar();
     return () => { cancelled = true; };
-  }, [beer]);
+  }, [beer?.id]);
 
-  if (!beer) return null;
-  const matchPercentage = Math.round(beer.match_score * 100);
+  // 3. FETCH MATCH SCORE (Hook is always called)
+  useEffect(() => {
+    if (!beer?.id || !userId) return;
 
+    if (beer.match_score > 0) {
+      setDynamicScore(normalizeScore(beer.match_score));
+      return;
+    }
+
+    const fetchRealTimeScore = async () => {
+      setIsScoring(true);
+      try {
+        const data = await getSingleMatchScore(userId, beer.id);
+        const rawScore = data[beer.id] ?? Object.values(data)[0];
+        setDynamicScore(rawScore !== undefined ? normalizeScore(rawScore) : -1);
+      } catch (err) {
+        setDynamicScore(-1);
+      } finally {
+        setIsScoring(false);
+      }
+    };
+    fetchRealTimeScore();
+  }, [beer?.id, beer?.match_score, userId]);
+
+  // 4. THE RENDERING GUARD: Safe to return null now because all hooks have been registered!
+  if (!beer) {
+    return null;
+  }
+
+  // 5. Helper Functions
   const handleSubmit = () => {
+    if (!beer) return;
     onSubmitReview(beer.id, rating, review);
     onClose();
   };
 
   const handleShare = () => {
+    if (!beer || !beer.id) return;
     if (!shareRecipient) return;
     const result = shareBeerWithUser(shareRecipient, {
       id: crypto.randomUUID(),
@@ -261,6 +295,7 @@ const BeerModal = ({ beer, onClose, userRatingData, onSubmitReview, onCardClick,
     }
   };
 
+  // 6. The JSX Output
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div 
@@ -272,10 +307,12 @@ const BeerModal = ({ beer, onClose, userRatingData, onSubmitReview, onCardClick,
         <img src={beer.image_url} alt={beer.name} className="modal-image" />
         <div className="modal-details">
           
-          {/* Match Score stays at the top left by itself */}
+          {/* Match Score UI */}
           <div className="match-score" style={{ backgroundColor: '#E67E22', color: '#fff', padding: '0.2rem 0.6rem', borderRadius: '4px', display: 'inline-block', fontSize: '0.85rem', fontWeight: 'bold', marginBottom: '0.8rem' }}>
-            {matchPercentage > 0 ? `${matchPercentage}% Match` : 'From Catalog'}
-          </div>
+  {isScoring ? 'Calculating...' : 
+   dynamicScore === -1 ? 'Need more data to match' : 
+   `${dynamicScore}% Match`}
+</div>
 
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem' }}>
           <h2 style={{ 
@@ -1049,7 +1086,7 @@ const BeerListsPage = ({ allBeers = [], onNavigate }) => {
 const BuildSixPackPage = ({ allBeers = [], onCardClick }) => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedPack, setGeneratedPack] = useState(null);
-  
+  const [showDeliveryModal, setShowDeliveryModal] = useState(false);
   const [packCount, setPackCount] = useState(1);
   const [partyMembers, setPartyMembers] = useState(['Me']);
   const [selectedFriend, setSelectedFriend] = useState('');
@@ -1198,7 +1235,12 @@ const BuildSixPackPage = ({ allBeers = [], onCardClick }) => {
               </p>
               <div style={{ marginTop: '1.5rem', display: 'flex', gap: '1rem' }}>
                 <button style={{ backgroundColor: '#E67E22', color: '#fff', border: 'none', padding: '0.8rem 1.5rem', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>Save to My Lists</button>
-                <button style={{ backgroundColor: 'transparent', color: '#E67E22', border: '1px solid #E67E22', padding: '0.8rem 1.5rem', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>Order Delivery</button>
+                <button 
+                onClick={() => setShowDeliveryModal(true)}
+                style={{ backgroundColor: 'transparent', color: '#E67E22', border: '1px solid #E67E22', padding: '0.8rem 1.5rem', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}
+              >
+                Order Delivery
+              </button>
               </div>
             </div>
           )}
@@ -1265,6 +1307,38 @@ const BuildSixPackPage = ({ allBeers = [], onCardClick }) => {
             >
               {isGenerating ? 'Crunching Preferences...' : 'Generate Selection'}
             </button>
+
+            {showDeliveryModal && (
+  <div className="delivery-modal-container">
+    <div 
+      style={{ 
+        backgroundColor: '#1a1a1a', 
+        border: '2px solid #E67E22', 
+        padding: '2rem', 
+        borderRadius: '12px', 
+        textAlign: 'center',
+        boxShadow: '0 10px 25px rgba(0,0,0,0.5)'
+      }}
+    >
+      <h2 style={{ color: '#fff', marginTop: 0 }}>Order Success!</h2>
+      <p style={{ color: '#aaa' }}>Added 6 pack to cart in your FoodFellas account</p>
+      
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '1rem', marginTop: '1.5rem' }}>
+        <img src={logo} alt="RuBeer" style={{ height: '65px' }} />
+        <span style={{ color: '#E67E22', fontSize: '1.2rem' }}>×</span>
+        <img src={FoodFellas} alt="FoodFellas" style={{ height: '65px' }} />
+      </div>
+
+      <button 
+        onClick={() => setShowDeliveryModal(false)}
+        style={{ marginTop: '2rem', width: '100%', padding: '0.8rem', backgroundColor: '#E67E22', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}
+      >
+        Close
+      </button>
+    </div>
+  </div>
+)}
+
           </div>
         </div>
         
@@ -1321,7 +1395,7 @@ const DiscoverPage = ({ allBeers = [], favorites, onCardClick, onToggleFav }) =>
 
     setIsSearching(true);
     try {
-      const response = await fetch(`http://localhost:8000/beers/search?q=${encodeURIComponent(searchQuery)}&limit=1000`);
+      const response = await fetch(`http://localhost:8000/beers/search?q=${encodeURIComponent(searchQuery)}&limit=2000`);
       const data = await response.json();
 
       const normalizedBeers = data.results.map(b => {
@@ -2133,14 +2207,14 @@ const RecommenderDashboard = ({ onLogout, coldStartRecs, userId, isNewUser = fal
       </div>
 
       <BeerModal
-        beer={selectedBeer}
-        onClose={() => setSelectedBeer(null)}
-        userRatingData={selectedBeer ? userRatings[selectedBeer.id] : null}
-        onSubmitReview={handleSubmitReview}
-        onCardClick={(beer) => setSelectedBeer(beer)}
-        userId={userId}
-        onShareSent={() => setShareVersion((v) => v + 1)}
-      />
+          beer={selectedBeer}
+          onClose={() => setSelectedBeer(null)}
+          userRatingData={selectedBeer?.id ? userRatings[selectedBeer.id] : null} 
+          onSubmitReview={handleSubmitReview}
+          onCardClick={(beer) => setSelectedBeer(beer)}
+          userId={userId}
+          onShareSent={() => setShareVersion((v) => v + 1)}
+        />
       {showMenuUpload && (
         <MenuUpload
           userId={userId}

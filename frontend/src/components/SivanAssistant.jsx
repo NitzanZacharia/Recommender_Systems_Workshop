@@ -94,7 +94,7 @@ const SivanAssistant = () => {
       ) : (
         <div style={styles.closedContainer}>
           <div onClick={toggleChat} style={styles.tooltipBubble}>
-            Hey! Welcome to the latest version of RuBeer. Ask me anything about beer!
+            Hey! I'm Sivan, your AI Assistant. Ask me anything about RuBeer!
           </div>
           <button onClick={toggleChat} style={styles.avatarButton}>
             <img 

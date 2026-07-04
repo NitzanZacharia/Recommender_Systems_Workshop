@@ -12,7 +12,7 @@ function App() {
   const [needsColdStart, setNeedsColdStart] = useState(false);
   const [coldStartRecs, setColdStartRecs] = useState(null);
   const [isNewUser, setIsNewUser] = useState(false);
-
+  const isLoggedIn = currentUser !== null;
   const [showAuth, setShowAuth] = useState(false);
   const [initialAuthView, setInitialAuthView] = useState(true); 
 
@@ -80,7 +80,7 @@ function App() {
   return (
     <>
       {renderCurrentScreen()}
-      <SivanAssistant />
+      {isLoggedIn && <SivanAssistant />}
     </>
   );
 }

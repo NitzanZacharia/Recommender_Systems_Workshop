@@ -166,7 +166,7 @@
   display: flex;
   justify-content: center;
   align-items: center;
-  z-index: 1000; /* Ensures it sits on top of everything */
+  z-index: 9999; /* Ensures it sits on top of everything */
 }
 
 .modal-content {
@@ -1013,4 +1013,14 @@ input:checked + .slider:before {
   margin: 0.3rem 0 0 0;
   font-style: italic;
   font-size: 0.95rem;
+}
+
+.delivery-modal-container {
+  position: fixed;
+  bottom: 20px; /* Positions it 20px from the bottom */
+  left: 50%;
+  transform: translateX(-50%); /* Centers it horizontally */
+  z-index: 999999 !important; /* Ensures it is on top */
+  width: 90%;
+  max-width: 400px;
 }
