@@ -6,7 +6,7 @@ const SivanAssistant = () => {
   const [inputMessage, setInputMessage] = useState('');
   
   const [messages, setMessages] = useState([
-    { sender: 'Sivan', text: "Hey! I'm Sivan your AI assistant. Ask me anything about beer!" }
+    { sender: 'Sivan', text: "Hey! I'm Sivan your AI assistant. Ask me anything about RuBeer!" }
   ]);
 
   const toggleChat = () => setIsOpen(!isOpen);
@@ -37,7 +37,7 @@ const SivanAssistant = () => {
       
     } catch (error) {
       console.error("Error talking to Sivan:", error);
-      setMessages(prev => [...prev, { sender: 'Sivan', text: "Sorry, I'm having trouble connecting to the server right now! try next semester" }]);
+      setMessages(prev => [...prev, { sender: 'Sivan', text: "Sorry, I'm having trouble connecting to the server right now!" }]);
     }
   };
 
@@ -174,7 +174,8 @@ const styles = {
     fontWeight: 'bold',
     fontSize: '16px',
     zIndex: 10, 
-    boxShadow: '0 2px 5px rgba(0,0,0,0.5)', 
+    boxShadow: '0 2px 5px rgba(0,0,0,0.5)',
+    flexshrink: 0, 
   },
   iconButton: {
     background: 'none',
@@ -190,20 +191,22 @@ const styles = {
     flex: 1,
     display: 'flex',
     flexDirection: 'column',
-    justifyContent: 'flex-end', 
+    justifyContent: 'flex-end',
     backgroundSize: 'cover',
     backgroundPosition: 'center top',
     backgroundRepeat: 'no-repeat',
     backgroundColor: '#111', 
+    overflow: 'hidden', 
   },
 
   messageList: {
-    maxHeight: '40%', 
+    maxHeight: '40%',   
     overflowY: 'auto',
     padding: '15px',
     display: 'flex',
     flexDirection: 'column',
     gap: '12px',
+    flexShrink: 0,     
     background: 'linear-gradient(to top, rgba(0,0,0,0.8) 0%, rgba(0,0,0,0.4) 70%, transparent 100%)',
   },
   
@@ -222,6 +225,7 @@ const styles = {
     backgroundColor: '#111', 
     borderTop: '1px solid #ff9800', 
     zIndex: 10,
+    flexshrink: 0,
   },
   inputField: {
     flex: 1,
