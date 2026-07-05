@@ -117,3 +117,9 @@ export async function uploadMenuImage(userId, imageFile, recNum = 10) {
   }
   return response.json();
 }
+
+// GET /recommendations/{user_id}/beer/{beer_id}
+// Returns a single match score for a specific user and beer
+export async function getSingleMatchScore(userId, beerId) {
+  return request(`/recommendations/${encodeURIComponent(userId)}/beer/${encodeURIComponent(beerId)}`);
+}

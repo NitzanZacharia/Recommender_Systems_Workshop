@@ -2,13 +2,14 @@ import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import './Dashboard.css';
 import logo from '../assets/logo.png';
 import rubiBadge from '../assets/rubi_sym_circ.jpeg';
-import { getRecommendations, getBeerDetails, getSimilarBeers, submitRating, getTopBeers, getAdventurousRecommendations, getAntiRecommendations, uploadMenuImage } from '../services/apiService';
+import { getRecommendations, getBeerDetails, getSimilarBeers, submitRating, getTopBeers, getAdventurousRecommendations, getSingleMatchScore, getAntiRecommendations, uploadMenuImage } from '../services/apiService';
 import { getBeerImage, DEFAULT_BEER_IMAGE } from '../utils/beerImages';
 import NewUserBanner from './NewUserBanner';
 import UserProfilePage from './UserProfilePage';
 import SharedWithMePage from './SharedWithMePage';
 import { saveRating as persistRating, getUserRecord, getRegisteredUsers, shareBeerWithUser } from '../services/authService';
 import MenuUpload from './MenuUpload';
+import FoodFellas from '../assets/FoodFellas.png';
 
 const SCALED_MIN = 0.70;
 const SCALED_MAX = 0.97;
@@ -21,17 +22,21 @@ const scaleScores = (scores) => {
   return scores.map(s => SCALED_MIN + ((s - min) / (max - min)) * (SCALED_MAX - SCALED_MIN));
 };
 
-// Maps a /beers/{id} response (plus an optional match score) into the shape
-// the existing card/modal UI expects.
-const mapBeerToCard = (beer, score) => ({
-  id: beer.beer_id,
-  name: beer.beer_name,
-  style: beer.beer_style,
-  abv: beer.beer_abv,
-  match_score: typeof score === 'number' ? score : 0,
-  rating: beer.avg_overall_rating,
-  image_url: getBeerImage(beer.beer_style, beer.beer_id),
-});
+
+const mapBeerToCard = (beer, score) => {
+  const rawId = beer.beer_id ?? beer.id;
+  const safeId = Number(rawId);
+
+  return {
+    id: safeId,
+    name: beer.beer_name || beer.name,
+    style: beer.beer_style || beer.style,
+    abv: beer.beer_abv || beer.abv,
+    match_score: typeof score === 'number' ? score : 0,
+    rating: beer.avg_overall_rating || beer.rating,
+    image_url: getBeerImage(beer.beer_style || beer.style, safeId),
+  };
+};
 
 const GroupSwitcher = ({ partyMembers, onApplyMembers, friendDatabase }) => {
   const [draftMembers, setDraftMembers] = useState(partyMembers);
@@ -185,54 +190,87 @@ export const BottleIcon = ({ filled, onMouseEnter, onMouseLeave, onClick }) => (
   </svg>
 );
 
-// --- Modal Component with Review System ---
+const normalizeScore = (score) => {
+  if (score === null || score === undefined) return null;
+  const val = score > 1 ? score : score * 100;
+  return Math.round(val);
+};
+
 const BeerModal = ({ beer, onClose, userRatingData, onSubmitReview, onCardClick, userId, onShareSent }) => {
+  // 1. ALL HOOKS DEFINED FIRST (No conditions here)
   const [hoverRating, setHoverRating] = useState(0);
   const [rating, setRating] = useState(userRatingData?.rating || 0);
   const [review, setReview] = useState(userRatingData?.review || '');
   const [shareOpen, setShareOpen] = useState(false);
   const [shareRecipient, setShareRecipient] = useState('');
   const [shareNote, setShareNote] = useState('');
-  const [shareStatus, setShareStatus] = useState(null); // null | 'sent' | 'error'
-  const registeredUsers = userId ? getRegisteredUsers(userId) : [];
+  const [shareStatus, setShareStatus] = useState(null); 
   const [similarBeers, setSimilarBeers] = useState([]);
   const [loadingSimilar, setLoadingSimilar] = useState(false);
+  const [dynamicScore, setDynamicScore] = useState(null);
+  const [isScoring, setIsScoring] = useState(false);
+  
+  const registeredUsers = userId ? getRegisteredUsers(userId) : [];
 
+  // 2. FETCH SIMILAR BEERS (Hook is always called)
   useEffect(() => {
-    if (!beer) return;
+    if (!beer?.id) return; // Guard logic is inside, not outside
+    
     let cancelled = false;
-
     const fetchSimilar = async () => {
       setLoadingSimilar(true);
-      setSimilarBeers([]);
       try {
         const { similar } = await getSimilarBeers(beer.id, 3);
-        const details = await Promise.all(
-          similar.map((s) => getBeerDetails(s.beer_id))
-        );
-        if (cancelled) return;
-        setSimilarBeers(details.map((d, i) => mapBeerToCard(d, similar[i].score)));
+        const details = await Promise.all(similar.map((s) => getBeerDetails(s.beer_id)));
+        if (!cancelled) setSimilarBeers(details.map((d, i) => mapBeerToCard(d, similar[i].score)));
       } catch {
-        // Similar beers are non-critical; fail silently.
         if (!cancelled) setSimilarBeers([]);
       } finally {
         if (!cancelled) setLoadingSimilar(false);
       }
     };
-
     fetchSimilar();
     return () => { cancelled = true; };
-  }, [beer]);
+  }, [beer?.id]);
 
-  if (!beer) return null;
-  const matchPercentage = Math.round(beer.match_score * 100);
+  // 3. FETCH MATCH SCORE (Hook is always called)
+  useEffect(() => {
+    if (!beer?.id || !userId) return;
 
+    if (beer.match_score > 0) {
+      setDynamicScore(normalizeScore(beer.match_score));
+      return;
+    }
+
+    const fetchRealTimeScore = async () => {
+      setIsScoring(true);
+      try {
+        const data = await getSingleMatchScore(userId, beer.id);
+        const rawScore = data[beer.id] ?? Object.values(data)[0];
+        setDynamicScore(rawScore !== undefined ? normalizeScore(rawScore) : -1);
+      } catch (err) {
+        setDynamicScore(-1);
+      } finally {
+        setIsScoring(false);
+      }
+    };
+    fetchRealTimeScore();
+  }, [beer?.id, beer?.match_score, userId]);
+
+  // 4. THE RENDERING GUARD: Safe to return null now because all hooks have been registered!
+  if (!beer) {
+    return null;
+  }
+
+  // 5. Helper Functions
   const handleSubmit = () => {
+    if (!beer) return;
     onSubmitReview(beer.id, rating, review);
     onClose();
   };
 
   const handleShare = () => {
+    if (!beer || !beer.id) return;
     if (!shareRecipient) return;
     const result = shareBeerWithUser(shareRecipient, {
       id: crypto.randomUUID(),
@@ -257,22 +295,37 @@ const BeerModal = ({ beer, onClose, userRatingData, onSubmitReview, onCardClick,
     }
   };
 
+  // 6. The JSX Output
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+      <div 
+        className="modal-content" 
+        onClick={(e) => e.stopPropagation()}
+        style={{ maxHeight: '90vh', overflowY: 'auto', overflowX: 'hidden' }}
+      >
         <button className="close-button" onClick={onClose}>&times;</button>
         <img src={beer.image_url} alt={beer.name} className="modal-image" />
         <div className="modal-details">
           
-          {/* Match Score stays at the top left by itself */}
+          {/* Match Score UI */}
           <div className="match-score" style={{ backgroundColor: '#E67E22', color: '#fff', padding: '0.2rem 0.6rem', borderRadius: '4px', display: 'inline-block', fontSize: '0.85rem', fontWeight: 'bold', marginBottom: '0.8rem' }}>
-            {matchPercentage}% Match
-          </div>
+  {isScoring ? 'Calculating...' : 
+   dynamicScore === -1 ? 'Need more data to match' : 
+   `${dynamicScore}% Match`}
+</div>
 
-          {/* NEW: Title and Rating locked onto the exact same line */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h2 style={{ margin: 0 }}>{beer.name}</h2>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '1.2rem', fontWeight: 'bold', color: '#fff' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem' }}>
+          <h2 style={{ 
+            margin: 0, 
+            wordBreak: 'break-word', 
+            whiteSpace: 'normal', 
+            flex: 1,
+            fontSize: beer.name.length > 35 ? '1.3rem' : '1.8rem',
+            lineHeight: '1.2'
+          }}>
+            {beer.name}
+          </h2>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '1.2rem', fontWeight: 'bold', color: '#fff', flexShrink: 0 }}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="#E67E22" stroke="#E67E22"><path d="M10 2v5l-2 3v10a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-10l-2-3V2z"></path><path d="M10 2h4"></path></svg>
               {typeof beer.rating === 'number' ? beer.rating.toFixed(1) : "New"}
               <span style={{ fontSize: '0.7rem', fontWeight: 'normal', color: '#aaa' }}>Avg Rating</span>
@@ -350,19 +403,29 @@ const BeerModal = ({ beer, onClose, userRatingData, onSubmitReview, onCardClick,
               ))}
             </div>
             <textarea 
-              className="review-textarea"
-              style={{ resize: 'none' }} 
-              placeholder="What did you think of this brew? (Optional)"
-              value={review}
-              onChange={(e) => setReview(e.target.value)}
-              spellCheck={false}
-              data-gramm={false}
-            />
-            <button 
-              className="submit-review-btn" 
-              disabled={rating === 0}
-              onClick={handleSubmit}
-            >
+          className="review-textarea"
+          style={{ 
+          resize: 'none',
+          backgroundColor: review ? 'transparent' : '', 
+          color: review ? '#E67E22' : '',
+          width: '100%', 
+          boxSizing: 'border-box'
+          }} 
+            placeholder="What did you think of this brew? (Optional)"
+            value={review}
+            onChange={(e) => setReview(e.target.value)}
+            spellCheck={false}
+            data-gramm={false}
+          />
+          <button 
+            className="submit-review-btn" 
+            disabled={rating === 0}
+            onClick={handleSubmit}
+            style={{ 
+              width: '100%', 
+              boxSizing: 'border-box' 
+            }}
+                      >
               Save Rating
             </button>
           </div>
@@ -382,8 +445,10 @@ const BeerModal = ({ beer, onClose, userRatingData, onSubmitReview, onCardClick,
                     className="similar-card"
                     onClick={() => onCardClick && onCardClick(sb)}
                   >
-                    <img src={sb.image_url} alt={sb.name} />
-                    <span>{sb.name}</span>
+                    <img src={sb.image_url} alt={sb.name} style={{ flexShrink: 0 }} />
+                    <span style={{ wordBreak: 'break-word', whiteSpace: 'normal', width: '100%', display: 'block' }}>
+                    {sb.name}
+                  </span>
                   </div>
                 ))}
               </div>
@@ -423,7 +488,7 @@ const BeerCard = ({ beer, onCardClick, isFav, onToggleFav }) => {
           
           <div className="card-header-row">
             <div className="match-score" style={{ color: '#E67E22', fontWeight: 'bold' }}>
-              {beer.rank ? `#${beer.rank}` : `${matchPercentage}% Match`}
+              {beer.rank ? `#${beer.rank}` : (matchPercentage > 0 ? `${matchPercentage}% Match` : 'Catalog')}
             </div>
             <div className="card-rating">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="#E67E22" stroke="#E67E22" strokeWidth="2"><path d="M10 2v5l-2 3v10a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-10l-2-3V2z"></path><path d="M10 2h4"></path></svg>
@@ -441,20 +506,130 @@ const BeerCard = ({ beer, onCardClick, isFav, onToggleFav }) => {
 
 // Swimlane
 const Swimlane = ({ title, beers, onCardClick, favorites, onToggleFav }) => {
+  const scrollRef = useRef(null);
+  const [showArrows, setShowArrows] = useState(false);
+
+  const scroll = (direction) => {
+    if (scrollRef.current) {
+      // Scroll by roughly 2 beer cards (450px) at a time
+      const scrollAmount = direction === 'left' ? -450 : 450;
+      scrollRef.current.scrollBy({ left: scrollAmount, behavior: 'smooth' });
+    }
+  };
+
   return (
-    <div className="swimlane">
+    <div 
+      className="swimlane" 
+      style={{ position: 'relative' }}
+      onMouseEnter={() => setShowArrows(true)}
+      onMouseLeave={() => setShowArrows(false)}
+    >
       <h2 className="swimlane-title">{title}</h2>
-      <div className="swimlane-row">
+      
+      {/* Left Arrow */}
+      <button 
+        onClick={() => scroll('left')}
+        style={{
+          position: 'absolute',
+          left: '-20px', 
+          top: '44%',
+          transform: 'translateY(-50%)',
+          backgroundColor: 'rgba(20, 20, 20, 0.9)',
+          color: '#E67E22',
+          border: '1px solid #E67E22',
+          borderRadius: '50%',
+          width: '45px',
+          height: '45px',
+          display: showArrows ? 'flex' : 'none',
+          alignItems: 'center',
+          justifyContent: 'center',
+          cursor: 'pointer',
+          zIndex: 10,
+          fontSize: '22px',
+          fontWeight: 'bold',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.6)',
+          transition: 'all 0.2s',
+          opacity: showArrows ? 1 : 0
+        }}
+        onMouseEnter={(e) => { 
+          e.currentTarget.style.backgroundColor = '#E67E22'; 
+          e.currentTarget.style.color = '#fff'; 
+          e.currentTarget.style.transform = 'translateY(-50%) scale(1.1)'; 
+        }}
+        onMouseLeave={(e) => { 
+          e.currentTarget.style.backgroundColor = 'rgba(20, 20, 20, 0.9)'; 
+          e.currentTarget.style.color = '#E67E22'; 
+          e.currentTarget.style.transform = 'translateY(-50%) scale(1)'; 
+        }}
+      >
+        &#10094;
+      </button>
+
+      {/* The Scrollable Row */}
+      <div 
+        className="swimlane-row" 
+        ref={scrollRef}
+        style={{ 
+          overflowX: 'auto', 
+          scrollbarWidth: 'none', // Hides native scrollbar in Firefox
+          msOverflowStyle: 'none', // Hides native scrollbar in IE/Edge
+          display: 'flex',
+          gap: '20px',
+          paddingBottom: '10px'
+        }}
+      >
+        {/* Hides native scrollbar in Chrome/Safari/Edge */}
+        <style>{`.swimlane-row::-webkit-scrollbar { display: none; }`}</style>
+        
         {beers.map((beer) => (
           <BeerCard 
             key={beer.id} 
             beer={beer} 
             onCardClick={onCardClick} 
-            isFav={favorites.includes(beer.id)}
+            isFav={favorites.some(favId => Number(favId) === Number(beer.id))}
             onToggleFav={onToggleFav}
           />
         ))}
       </div>
+
+      {/* Right Arrow */}
+      <button 
+        onClick={() => scroll('right')}
+        style={{
+          position: 'absolute',
+          right: '-20px',
+          top: '44%',
+          transform: 'translateY(-50%)',
+          backgroundColor: 'rgba(20, 20, 20, 0.9)',
+          color: '#E67E22',
+          border: '1px solid #E67E22',
+          borderRadius: '50%',
+          width: '45px',
+          height: '45px',
+          display: showArrows ? 'flex' : 'none',
+          alignItems: 'center',
+          justifyContent: 'center',
+          cursor: 'pointer',
+          zIndex: 10,
+          fontSize: '22px',
+          fontWeight: 'bold',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.6)',
+          transition: 'all 0.2s',
+          opacity: showArrows ? 1 : 0
+        }}
+        onMouseEnter={(e) => { 
+          e.currentTarget.style.backgroundColor = '#E67E22'; 
+          e.currentTarget.style.color = '#fff'; 
+          e.currentTarget.style.transform = 'translateY(-50%) scale(1.1)'; 
+        }}
+        onMouseLeave={(e) => { 
+          e.currentTarget.style.backgroundColor = 'rgba(20, 20, 20, 0.9)'; 
+          e.currentTarget.style.color = '#E67E22'; 
+          e.currentTarget.style.transform = 'translateY(-50%) scale(1)'; 
+        }}
+      >
+        &#10095;
+      </button>
     </div>
   );
 };
@@ -491,9 +666,58 @@ const RubiDailyCard = ({ beer, onCardClick }) => {
 
 // Favorites Page Component
 const FavoritesPage = ({ allBeers, favorites, onCardClick, onToggleFav }) => {
-  const favoritedBeers = allBeers.filter(beer => favorites.includes(beer.id));
+  const [fullFavorites, setFullFavorites] = useState([]);
+  const [loading, setLoading] = useState(true);
 
-  if (favoritedBeers.length === 0) {
+  useEffect(() => {
+    let cancelled = false;
+
+    const fetchMissingFavorites = async () => {
+      setLoading(true);
+      
+      // 1. Get the ones we already know about from the dashboard feed
+      const knownBeers = allBeers.filter(b => favorites.some(fav => Number(fav) === Number(b.id)));
+      const knownIds = knownBeers.map(b => Number(b.id));
+      
+      // 2. Find the missing ones that were favorited from the Search page
+      const missingIds = favorites.filter(id => !knownIds.includes(Number(id)));
+
+      if (missingIds.length === 0) {
+        setFullFavorites(knownBeers);
+        setLoading(false);
+        return;
+      }
+
+      try {
+        // 3. Use allSettled so one broken API call doesn't crash the whole cellar
+        const results = await Promise.allSettled(missingIds.map(id => getBeerDetails(id)));
+        if (cancelled) return;
+        
+        // Only extract the ones that successfully fetched
+        const fetchedBeers = results
+          .filter(r => r.status === 'fulfilled' && r.value)
+          .map(r => mapBeerToCard(r.value, 0));
+          
+        setFullFavorites([...knownBeers, ...fetchedBeers]);
+      } catch (err) {
+        console.error("Favorites fetch failed:", err);
+        if (!cancelled) setFullFavorites(knownBeers);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+
+    if (favorites.length > 0) {
+      fetchMissingFavorites();
+    } else {
+      setFullFavorites([]);
+      setLoading(false);
+    }
+    
+    return () => { cancelled = true; };
+  }, [favorites, allBeers]);
+
+  if (favorites.length === 0) {
     return (
       <div className="empty-state">
         <h2>Your cellar is empty!</h2>
@@ -502,18 +726,14 @@ const FavoritesPage = ({ allBeers, favorites, onCardClick, onToggleFav }) => {
     );
   }
 
+  if (loading) return <div className="empty-state"><h2 style={{ color: '#aaa' }}>Loading your cellar...</h2></div>;
+
   return (
     <div>
       <h2 className="page-title">Your Favorites</h2>
       <div className="favorites-grid">
-        {favoritedBeers.map((beer) => (
-          <BeerCard 
-            key={beer.id} 
-            beer={beer} 
-            onCardClick={onCardClick} 
-            isFav={true}
-            onToggleFav={onToggleFav}
-          />
+        {fullFavorites.map((beer) => (
+          <BeerCard key={beer.id} beer={beer} onCardClick={onCardClick} isFav={true} onToggleFav={onToggleFav} />
         ))}
       </div>
     </div>
@@ -744,8 +964,8 @@ const BeerListsPage = ({ allBeers = [], onNavigate }) => {
               <div style={{ overflowY: 'auto', flex: 1, display: 'grid', gap: '0.5rem' }}>
                 {availableBeersToAdd.map(beer => (
                   <div key={beer.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem', backgroundColor: '#222', borderRadius: '6px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                      <img src={beer.image_url} alt={beer.name} style={{ width: '30px', height: '30px', borderRadius: '4px' }} />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flex: 1, minWidth: 0, paddingRight: '1rem' }}>
+                      <img src={beer.image_url} alt={beer.name} style={{ width: '30px', height: '30px', borderRadius: '4px', flexShrink: 0 }} />
                       <span style={{ color: '#fff', fontSize: '0.9rem' }}>{beer.name}</span>
                     </div>
                     <button onClick={() => handleAddBeerToList(beer)} style={{ backgroundColor: '#E67E22', border: 'none', color: '#fff', padding: '0.3rem 0.8rem', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>
@@ -866,7 +1086,7 @@ const BeerListsPage = ({ allBeers = [], onNavigate }) => {
 const BuildSixPackPage = ({ allBeers = [], onCardClick }) => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedPack, setGeneratedPack] = useState(null);
-  
+  const [showDeliveryModal, setShowDeliveryModal] = useState(false);
   const [packCount, setPackCount] = useState(1);
   const [partyMembers, setPartyMembers] = useState(['Me']);
   const [selectedFriend, setSelectedFriend] = useState('');
@@ -1015,7 +1235,12 @@ const BuildSixPackPage = ({ allBeers = [], onCardClick }) => {
               </p>
               <div style={{ marginTop: '1.5rem', display: 'flex', gap: '1rem' }}>
                 <button style={{ backgroundColor: '#E67E22', color: '#fff', border: 'none', padding: '0.8rem 1.5rem', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>Save to My Lists</button>
-                <button style={{ backgroundColor: 'transparent', color: '#E67E22', border: '1px solid #E67E22', padding: '0.8rem 1.5rem', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>Order Delivery</button>
+                <button 
+                onClick={() => setShowDeliveryModal(true)}
+                style={{ backgroundColor: 'transparent', color: '#E67E22', border: '1px solid #E67E22', padding: '0.8rem 1.5rem', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}
+              >
+                Order Delivery
+              </button>
               </div>
             </div>
           )}
@@ -1082,6 +1307,38 @@ const BuildSixPackPage = ({ allBeers = [], onCardClick }) => {
             >
               {isGenerating ? 'Crunching Preferences...' : 'Generate Selection'}
             </button>
+
+            {showDeliveryModal && (
+  <div className="delivery-modal-container">
+    <div 
+      style={{ 
+        backgroundColor: '#1a1a1a', 
+        border: '2px solid #E67E22', 
+        padding: '2rem', 
+        borderRadius: '12px', 
+        textAlign: 'center',
+        boxShadow: '0 10px 25px rgba(0,0,0,0.5)'
+      }}
+    >
+      <h2 style={{ color: '#fff', marginTop: 0 }}>Order Success!</h2>
+      <p style={{ color: '#aaa' }}>Added 6 pack to cart in your FoodFellas account</p>
+      
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '1rem', marginTop: '1.5rem' }}>
+        <img src={logo} alt="RuBeer" style={{ height: '65px' }} />
+        <span style={{ color: '#E67E22', fontSize: '1.2rem' }}>×</span>
+        <img src={FoodFellas} alt="FoodFellas" style={{ height: '65px' }} />
+      </div>
+
+      <button 
+        onClick={() => setShowDeliveryModal(false)}
+        style={{ marginTop: '2rem', width: '100%', padding: '0.8rem', backgroundColor: '#E67E22', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}
+      >
+        Close
+      </button>
+    </div>
+  </div>
+)}
+
           </div>
         </div>
         
@@ -1091,21 +1348,38 @@ const BuildSixPackPage = ({ allBeers = [], onCardClick }) => {
 };
 
 // Discover Page Component
-const DiscoverPage = ({ allBeers, favorites, onCardClick, onToggleFav }) => {
- const [searchQuery, setSearchQuery] = useState('');
-  const [appliedSearch, setAppliedSearch] = useState('');
-  const [activeTags, setActiveTags] = useState([]);
+const discoverCache = {
+  searchQuery: '',
+  searchResults: [],
+  hasSearched: false,
+  currentPage: 1
+};
+
+// Discover Page Component
+const DiscoverPage = ({ allBeers = [], favorites, onCardClick, onToggleFav }) => {
+  // Initialize state directly from the external memory cache
+  const [searchQuery, setSearchQuery] = useState(discoverCache.searchQuery);
+  const [searchResults, setSearchResults] = useState(discoverCache.searchResults);
+  const [hasSearched, setHasSearched] = useState(discoverCache.hasSearched);
+  const [currentPage, setCurrentPage] = useState(discoverCache.currentPage);
+
+  // Auto-save back to the cache whenever the user interacts
+  useEffect(() => {
+    discoverCache.searchQuery = searchQuery;
+    discoverCache.searchResults = searchResults;
+    discoverCache.hasSearched = hasSearched;
+    discoverCache.currentPage = currentPage;
+  }, [searchQuery, searchResults, hasSearched, currentPage]);
+
+  const [isSearching, setIsSearching] = useState(false);
+  const ITEMS_PER_PAGE = 20;
+
   const [showFilters, setShowFilters] = useState(false);
-  
-  const filterDefaults = { maxAbv: 20, maxDistance: 100, minRating: 0 };
+  const filterDefaults = { maxAbv: 20, minRating: 0, categories: [] };
   const [draftFilters, setDraftFilters] = useState({ ...filterDefaults });
-  const [appliedFilters, setAppliedFilters] = useState({});
+  const [appliedFilters, setAppliedFilters] = useState({ ...filterDefaults });
 
   const ALL_CATEGORIES = ["IPA", "Stout", "Lager", "Pilsner", "Ale", "Porter"];
-
-  // Maps each UI tag to the substrings that can appear in real dataset style names.
-  // "IPA" must cover "India Pale Ale" because that's how the BeerAdvocate dataset
-  // labels most IPA beers — "india pale ale".includes("ipa") is false.
   const STYLE_PATTERNS = {
     IPA:     ['ipa', 'india pale ale', 'imperial pale ale'],
     Stout:   ['stout'],
@@ -1115,176 +1389,232 @@ const DiscoverPage = ({ allBeers, favorites, onCardClick, onToggleFav }) => {
     Porter:  ['porter'],
   };
 
-  // Only show tags that actually have matching beers in the current pool.
-  const availableCategories = ALL_CATEGORIES.filter(tag => {
-    const patterns = STYLE_PATTERNS[tag] || [tag.toLowerCase()];
-    return allBeers.some(beer => {
-      const style = (beer.style || '').toLowerCase();
-      return patterns.some(p => style.includes(p));
-    });
-  });
+  const handleSearch = async (e) => {
+    e.preventDefault();
+    if (searchQuery.length < 2) return;
 
-  const handleTagClick = (category) => {
-    if (activeTags.includes(category)) {
-      setActiveTags(activeTags.filter(tag => tag !== category));
+    setIsSearching(true);
+    try {
+      const response = await fetch(`http://localhost:8000/beers/search?q=${encodeURIComponent(searchQuery)}&limit=2000`);
+      const data = await response.json();
+
+      const normalizedBeers = data.results.map(b => {
+        const numericId = Number(b.beer_id);
+        const existingRichBeer = allBeers.find(rich => Number(rich.id) === numericId);
+        if (existingRichBeer) return existingRichBeer;
+
+        return mapBeerToCard(b, 0); 
+      });
+
+      setSearchResults(normalizedBeers);
+      setHasSearched(true);
+      setCurrentPage(1); 
+    } catch (error) {
+      console.error("Search failed:", error);
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const handleCategoryToggle = (category) => {
+    const currentCategories = draftFilters.categories;
+    if (currentCategories.includes(category)) {
+      setDraftFilters({ ...draftFilters, categories: currentCategories.filter(c => c !== category) });
     } else {
-      setActiveTags([...activeTags, category]);
+      setDraftFilters({ ...draftFilters, categories: [...currentCategories, category] });
     }
   };
 
   const handleApplyFilters = () => {
-    const newApplied = {};
-    if (draftFilters.maxAbv < filterDefaults.maxAbv) newApplied.maxAbv = draftFilters.maxAbv;
-    if (draftFilters.maxDistance < filterDefaults.maxDistance) newApplied.maxDistance = draftFilters.maxDistance;
-    if (draftFilters.minRating > filterDefaults.minRating) newApplied.minRating = draftFilters.minRating;
-    
-    setAppliedFilters(newApplied);
+    setAppliedFilters({ ...draftFilters });
     setShowFilters(false); 
+    setCurrentPage(1); 
   };
 
-  const removeFilter = (key) => {
-    const newApplied = { ...appliedFilters };
-    delete newApplied[key];
-    setAppliedFilters(newApplied);
-    setDraftFilters({ ...draftFilters, [key]: filterDefaults[key] });
-  };
-
-  const filteredBeers = allBeers.filter(beer => {
+  const filteredBeers = searchResults.filter(beer => {
     const style = (beer.style || '').toLowerCase();
-    const matchesSearch = beer.name.toLowerCase().includes(appliedSearch.toLowerCase()) ||
-                          style.includes(appliedSearch.toLowerCase());
+    const beerAbv = beer.abv || 0;
+    const beerRating = beer.rating || 0;
 
-    const matchesTags = activeTags.length === 0 ||
-      activeTags.some(tag => {
+    const matchesTags = appliedFilters.categories.length === 0 ||
+      appliedFilters.categories.some(tag => {
         const patterns = STYLE_PATTERNS[tag] || [tag.toLowerCase()];
         return patterns.some(p => style.includes(p));
       });
 
-    const beerAbv = beer.abv || 0;
-    const beerDistance = beer.distance || 0; 
-    const beerRating = beer.rating || 5; 
-
     const matchesAbv = appliedFilters.maxAbv ? beerAbv <= appliedFilters.maxAbv : true;
-    const matchesDistance = appliedFilters.maxDistance ? beerDistance <= appliedFilters.maxDistance : true;
     const matchesRating = appliedFilters.minRating ? beerRating >= appliedFilters.minRating : true;
 
-    return matchesSearch && matchesTags && matchesAbv && matchesDistance && matchesRating;
+    return matchesTags && matchesAbv && matchesRating;
   });
 
+  const totalPages = Math.ceil(filteredBeers.length / ITEMS_PER_PAGE);
+  const indexOfLastBeer = currentPage * ITEMS_PER_PAGE;
+  const indexOfFirstBeer = indexOfLastBeer - ITEMS_PER_PAGE;
+  const currentBeers = filteredBeers.slice(indexOfFirstBeer, indexOfLastBeer);
+
   return (
-    <div>
-      <h2 className="page-title">Explore</h2>
+    <div className="discover-container" style={{ padding: '20px', color: '#fff' }}>
       
-      <div className="search-container">
-        <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
+      {/* --- CUSTOM CSS FOR PENTAGON SLIDERS --- */}
+      <style>{`
+        .pentagon-slider {
+          -webkit-appearance: none;
+          appearance: none;
+          width: 100%;
+          height: 6px;
+          border-radius: 3px;
+          outline: none;
+          cursor: pointer;
+        }
+        
+        /* Chrome, Safari, Edge */
+        .pentagon-slider::-webkit-slider-thumb {
+          -webkit-appearance: none;
+          appearance: none;
+          width: 18px;
+          height: 22px;
+          background-color: #E67E22;
+          clip-path: polygon(0% 0%, 100% 0%, 100% 65%, 50% 100%, 0% 65%);
+          cursor: pointer;
+          transition: transform 0.1s ease-in-out, background-color 0.1s;
+        }
+        
+        /* Firefox */
+        .pentagon-slider::-moz-range-thumb {
+          width: 18px;
+          height: 22px;
+          background-color: #E67E22;
+          clip-path: polygon(0% 0%, 100% 0%, 100% 65%, 50% 100%, 0% 65%);
+          cursor: pointer;
+          border: none;
+          border-radius: 0;
+          transition: transform 0.1s ease-in-out, background-color 0.1s;
+        }
+
+        /* Hover Effects */
+        .pentagon-slider::-webkit-slider-thumb:hover {
+          transform: scale(1.15);
+          background-color: #ff9800;
+        }
+        .pentagon-slider::-moz-range-thumb:hover {
+          transform: scale(1.15);
+          background-color: #ff9800;
+        }
+      `}</style>
+
+      {/* --- SEARCH BAR --- */}
+      <div style={{ display: 'flex', gap: '15px', marginBottom: '25px', alignItems: 'center' }}>
+        <form onSubmit={handleSearch} style={{ display: 'flex', flex: 1, gap: '10px' }}>
           <input 
             type="text" 
-            className="search-input" 
-            placeholder="Search for a beer name or style..." 
+            placeholder="Search by beer name or style..." 
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && setAppliedSearch(searchQuery)}
-            style={{ flex: 1, margin: 0 }} 
+            style={{ flex: 1, padding: '12px 20px', fontSize: '16px', borderRadius: '25px', border: '1px solid #333', backgroundColor: '#141414', color: '#fff', outline: 'none' }}
           />
-          <button 
-            onClick={() => setAppliedSearch(searchQuery)}
-            style={{ padding: '0 1.5rem', background: '#E67E22', border: 'none', borderRadius: '6px', color: 'white', cursor: 'pointer', fontWeight: 'bold' }}
-          >
-            Search
+          <button type="submit" disabled={isSearching} style={{ padding: '10px 25px', backgroundColor: '#E67E22', color: '#fff', border: 'none', borderRadius: '25px', cursor: 'pointer', fontWeight: 'bold', fontSize: '15px' }}>
+            {isSearching ? 'Searching...' : 'Search'}
+          </button>
+        </form>
+        <button type="button" onClick={() => setShowFilters(!showFilters)} style={{ padding: '10px 25px', backgroundColor: 'transparent', color: '#E67E22', border: '1px solid #E67E22', borderRadius: '25px', cursor: 'pointer', fontWeight: 'bold' }}>
+          Filters {appliedFilters.categories.length > 0 && `(${appliedFilters.categories.length})`}
+        </button>
+      </div>
+
+      {/* --- FILTERS PANEL --- */}
+      {showFilters && (
+        <div style={{ border: '1px solid #2a2a2a', padding: '20px', marginBottom: '25px', borderRadius: '10px', backgroundColor: '#1e1e1e' }}>
+          
+          <div style={{ marginBottom: '25px' }}>
+            <span style={{ color: '#aaa', fontSize: '14px', display: 'block', marginBottom: '10px' }}>Styles:</span>
+            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+              {ALL_CATEGORIES.map(cat => {
+                const isActive = appliedFilters.categories.includes(cat);
+                return (
+                  <button
+                    key={cat}
+                    onClick={() => {
+                      handleCategoryToggle(cat);
+                      const isCurrentlyActive = appliedFilters.categories.includes(cat);
+                      const updatedCategories = isCurrentlyActive 
+                        ? appliedFilters.categories.filter(c => c !== cat)
+                        : [...appliedFilters.categories, cat];
+                      setAppliedFilters({ ...appliedFilters, categories: updatedCategories });
+                      setCurrentPage(1);
+                    }}
+                    style={{
+                      padding: '8px 16px', borderRadius: '20px',
+                      border: isActive ? 'none' : '1px solid #E67E22',
+                      backgroundColor: isActive ? '#E67E22' : 'transparent',
+                      color: isActive ? '#fff' : '#E67E22',
+                      cursor: 'pointer', fontWeight: 'bold', transition: 'all 0.2s ease-in-out'
+                    }}
+                  >
+                    {cat}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: '40px' }}>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: '10px', flex: 1 }}>
+              <span style={{ color: '#aaa', fontSize: '14px' }}>Max ABV: <strong style={{ color: '#fff' }}>{draftFilters.maxAbv}%</strong></span>
+              <input 
+                type="range" min="0" max="20" step="0.5" 
+                value={draftFilters.maxAbv} 
+                onChange={(e) => setDraftFilters({...draftFilters, maxAbv: parseFloat(e.target.value)})} 
+                className="pentagon-slider"
+                style={{
+                  background: `linear-gradient(to right, #E67E22 ${(draftFilters.maxAbv / 20) * 100}%, #333 ${(draftFilters.maxAbv / 20) * 100}%)`
+                }}
+              />
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: '10px', flex: 1 }}>
+              <span style={{ color: '#aaa', fontSize: '14px' }}>Min Rating: <strong style={{ color: '#fff' }}>{draftFilters.minRating}</strong></span>
+              <input 
+                type="range" min="0" max="5" step="0.1" 
+                value={draftFilters.minRating} 
+                onChange={(e) => setDraftFilters({...draftFilters, minRating: parseFloat(e.target.value)})} 
+                className="pentagon-slider"
+                style={{
+                  background: `linear-gradient(to right, #E67E22 ${(draftFilters.minRating / 5) * 100}%, #333 ${(draftFilters.minRating / 5) * 100}%)`
+                }}
+              />
+            </label>
+          </div>
+          <button onClick={handleApplyFilters} style={{ marginTop: '20px', padding: '8px 20px', backgroundColor: '#E67E22', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>
+            Apply Sliders
           </button>
         </div>
-        
-        <div className="tags-container">
-          {availableCategories.map(category => (
-            <button
-              key={category}
-              className={`category-tag ${activeTags.includes(category) ? 'active' : ''}`}
-              onClick={() => handleTagClick(category)}
-            >
-              {category}
-            </button>
-          ))}
-        </div>
-        
-        <button className="filter-toggle-btn" onClick={() => setShowFilters(!showFilters)}>
-          {showFilters ? '- Hide Advanced Filters' : '+ Show Advanced Filters'}
-        </button>
+      )}
 
-        {showFilters && (
-          <div className="advanced-filters-panel">
-            <div className="filters-grid">
-              <div className="filter-group">
-                <label>Max ABV <span className="filter-value">{draftFilters.maxAbv}%</span></label>
-                <input 
-                  type="range" min="0" max="20" step="0.5" className="filter-slider"
-                  value={draftFilters.maxAbv}
-                  onChange={(e) => setDraftFilters({...draftFilters, maxAbv: Number(e.target.value)})}
-                />
-              </div>
-
-              <div className="filter-group">
-                <label>Max Distance <span className="filter-value">{draftFilters.maxDistance} km</span></label>
-                <input 
-                  type="range" min="1" max="100" step="1" className="filter-slider"
-                  value={draftFilters.maxDistance}
-                  onChange={(e) => setDraftFilters({...draftFilters, maxDistance: Number(e.target.value)})}
-                />
-              </div>
-
-              <div className="filter-group">
-                <label>Min Rating <span className="filter-value">{draftFilters.minRating} Stars</span></label>
-                <input 
-                  type="range" min="0" max="5" step="0.1" className="filter-slider"
-                  value={draftFilters.minRating}
-                  onChange={(e) => setDraftFilters({...draftFilters, minRating: Number(e.target.value)})}
-                />
-              </div>
-            </div>
-            
-            <button className="apply-filters-btn" onClick={handleApplyFilters}>
-              Apply Filters
-            </button>
-          </div>
-        )}
-
-        {Object.keys(appliedFilters).length > 0 && (
-          <div className="active-filters-container">
-            {appliedFilters.maxAbv && (
-              <span className="filter-bubble">
-                Max {appliedFilters.maxAbv}% ABV 
-                <button onClick={() => removeFilter('maxAbv')}>&times;</button>
-              </span>
-            )}
-            {appliedFilters.maxDistance && (
-              <span className="filter-bubble">
-                Within {appliedFilters.maxDistance}km 
-                <button onClick={() => removeFilter('maxDistance')}>&times;</button>
-              </span>
-            )}
-            {appliedFilters.minRating && (
-              <span className="filter-bubble">
-                {appliedFilters.minRating}+ Stars 
-                <button onClick={() => removeFilter('minRating')}>&times;</button>
-              </span>
-            )}
-          </div>
+      {/* --- RESULTS GRID --- */}
+      <div className="results-grid" style={{ display: 'flex', flexWrap: 'wrap', gap: '20px' }}>
+        {!hasSearched ? (
+          <p style={{ color: '#888', fontStyle: 'italic', padding: '20px 0' }}>Search to explore the 130,000+ RuBeer catalog!</p>
+        ) : currentBeers.length === 0 ? (
+          <p style={{ color: '#888', fontStyle: 'italic', padding: '20px 0' }}>No beers match your criteria.</p>
+        ) : (
+          currentBeers.map((beer) => (
+            <BeerCard 
+              key={beer.id} 
+              beer={beer} 
+              onCardClick={onCardClick} 
+              isFav={favorites.some(f => Number(f) === Number(beer.id))} 
+              onToggleFav={onToggleFav}
+            />
+          ))
         )}
       </div>
 
-      <div className="results-header">
-        Found {filteredBeers.length} {filteredBeers.length === 1 ? 'result' : 'results'}
-      </div>
-
-      {filteredBeers.length > 0 ? (
-        <div className="favorites-grid">
-          {filteredBeers.map((beer) => (
-            <BeerCard key={beer.id} beer={beer} onCardClick={onCardClick} isFav={favorites.includes(beer.id)} onToggleFav={onToggleFav} />
-          ))}
-        </div>
-      ) : (
-        <div className="empty-state">
-          <h2>No matches found</h2>
-          <p>Try adjusting your search or clearing some filters.</p>
+      {/* --- PAGINATION --- */}
+      {totalPages > 1 && (
+        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '20px', marginTop: '40px', paddingBottom: '20px' }}>
+          <button onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))} disabled={currentPage === 1} style={{ padding: '10px 20px', borderRadius: '8px', border: 'none', backgroundColor: currentPage === 1 ? '#333' : '#E67E22', color: currentPage === 1 ? '#666' : '#fff', cursor: currentPage === 1 ? 'not-allowed' : 'pointer', fontWeight: 'bold' }}>Previous</button>
+          <span style={{ fontWeight: 'bold', color: '#fff' }}>Page {currentPage} of {totalPages}</span>
+          <button onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))} disabled={currentPage === totalPages} style={{ padding: '10px 20px', borderRadius: '8px', border: 'none', backgroundColor: currentPage === totalPages ? '#333' : '#E67E22', color: currentPage === totalPages ? '#666' : '#fff', cursor: currentPage === totalPages ? 'not-allowed' : 'pointer', fontWeight: 'bold' }}>Next</button>
         </div>
       )}
     </div>
@@ -1347,7 +1677,7 @@ const TopBeersPage = ({ onCardClick, favorites, onToggleFav }) => {
             key={beer.id}
             beer={beer}
             onCardClick={onCardClick}
-            isFav={favorites.includes(beer.id)}
+            isFav={favorites.some(favId => Number(favId) === Number(beer.id))}
             onToggleFav={onToggleFav}
           />
         ))}
@@ -1440,7 +1770,7 @@ const AdventurousPage = ({ userId, onCardClick, favorites, onToggleFav }) => {
             key={beer.id}
             beer={beer}
             onCardClick={onCardClick}
-            isFav={favorites.includes(beer.id)}
+            isFav={favorites.some(favId => Number(favId) === Number(beer.id))}
             onToggleFav={onToggleFav}
           />
         ))}
@@ -1535,7 +1865,7 @@ const AntiRecommenderPage = ({ userId, onCardClick, favorites, onToggleFav }) =>
             <BeerCard
               beer={beer}
               onCardClick={onCardClick}
-              isFav={favorites.includes(beer.id)}
+              isFav={favorites.some(favId => Number(favId) === Number(beer.id))}
               onToggleFav={onToggleFav}
             />
           </div>
@@ -1698,7 +2028,17 @@ const RecommenderDashboard = ({ onLogout, coldStartRecs, userId, isNewUser = fal
   };
 
   const toggleFavorite = (beerId) => {
-    setFavorites(prev => prev.includes(beerId) ? prev.filter(id => id !== beerId) : [...prev, beerId]);
+    if (!beerId) return;
+    const numId = Number(beerId);
+    
+    setFavorites(prev => {
+      const cleanPrev = prev.map(id => Number(id));
+      if (cleanPrev.includes(numId)) {
+        return cleanPrev.filter(id => id !== numId);
+      } else {
+        return [...cleanPrev, numId];
+      }
+    });
   };
 
   const handleMenuResults = async (data) => {
@@ -1803,12 +2143,14 @@ const RecommenderDashboard = ({ onLogout, coldStartRecs, userId, isNewUser = fal
             )}
 
             {activeTab === 'discover' && (
+              <div style={{ display: activeTab === 'discover' ? 'block' : 'none' }}>
               <DiscoverPage
                 allBeers={allUniqueBeers.filter(b => !userRatings[b.id])}
                 favorites={favorites}
                 onCardClick={(beer) => setSelectedBeer(beer)}
                 onToggleFav={toggleFavorite}
               />
+            </div>
             )}
 
             {activeTab === 'beer-lists' && <BeerListsPage allBeers={allUniqueBeers} onNavigate={setActiveTab} />}
@@ -1865,14 +2207,14 @@ const RecommenderDashboard = ({ onLogout, coldStartRecs, userId, isNewUser = fal
       </div>
 
       <BeerModal
-        beer={selectedBeer}
-        onClose={() => setSelectedBeer(null)}
-        userRatingData={selectedBeer ? userRatings[selectedBeer.id] : null}
-        onSubmitReview={handleSubmitReview}
-        onCardClick={(beer) => setSelectedBeer(beer)}
-        userId={userId}
-        onShareSent={() => setShareVersion((v) => v + 1)}
-      />
+          beer={selectedBeer}
+          onClose={() => setSelectedBeer(null)}
+          userRatingData={selectedBeer?.id ? userRatings[selectedBeer.id] : null} 
+          onSubmitReview={handleSubmitReview}
+          onCardClick={(beer) => setSelectedBeer(beer)}
+          userId={userId}
+          onShareSent={() => setShareVersion((v) => v + 1)}
+        />
       {showMenuUpload && (
         <MenuUpload
           userId={userId}

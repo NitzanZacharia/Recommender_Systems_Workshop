@@ -87,6 +87,7 @@ const UserProfilePage = ({ userId, userRatings = {}, allUniqueBeers = [] }) => {
   const [confirmPw, setConfirmPw] = useState('');
   const [pwMsg, setPwMsg] = useState({ text: '', error: false });
   const [selectedFriend, setSelectedFriend] = useState('');
+  
 
   useEffect(() => {
     const r = getUserRecord(userId);
@@ -103,6 +104,14 @@ const UserProfilePage = ({ userId, userRatings = {}, allUniqueBeers = [] }) => {
     });
     return merged;
   }, [record, userRatings]);
+  const [showLegend, setShowLegend] = useState(false);
+  const getUserTitle = (ratingCount) => {
+    if (ratingCount <= 10) return "RuBeer Beginner";
+    if (ratingCount <= 50) return "RuBeer Apprentice";
+    if (ratingCount <= 250) return "Advanced RuBeerer";
+    if (ratingCount <= 1000) return "Master RuBeerer";
+    return "RuBeer Extraordinaire";
+  };
 
   // Friend compatibility must compare against beers the user has actually rated, not
   // whatever happens to be in the current (volatile) recommendation feed — a rated beer
@@ -253,6 +262,51 @@ const UserProfilePage = ({ userId, userRatings = {}, allUniqueBeers = [] }) => {
 
       {/* Stats */}
       <Section title="Stats">
+        
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', position: 'relative', marginBottom: '1.5rem' }}>
+          <h3 style={{ margin: 0, color: '#ff9800', fontSize: '1.2rem' }}>
+            {getUserTitle(ratingCount)} 
+          </h3>
+          
+          <button 
+            onClick={() => setShowLegend(!showLegend)}
+            style={{ 
+              width: '20px', height: '20px', borderRadius: '50%', 
+              backgroundColor: '#333', color: '#fff', border: '1px solid #ff9800',
+              display: 'flex', justifyContent: 'center', alignItems: 'center',
+              fontSize: '12px', fontWeight: 'bold', cursor: 'pointer', padding: 0
+            }}
+            title="View Title Legend"
+          >
+            ?
+          </button>
+
+          {showLegend && (
+            <div style={{ 
+              position: 'absolute', top: '100%', left: '0', marginTop: '10px', 
+              backgroundColor: '#222', border: '1px solid #ff9800', 
+              borderRadius: '8px', padding: '15px', zIndex: 100,
+              boxShadow: '0 4px 12px rgba(0,0,0,0.5)', width: '250px'
+            }}>
+              <h4 style={{ margin: '0 0 10px 0', borderBottom: '1px solid #444', paddingBottom: '5px', color: '#fff' }}>Rank Legend</h4>
+              <ul style={{ listStyleType: 'none', padding: 0, margin: 0, fontSize: '14px', lineHeight: '1.6', color: '#ccc' }}>
+                <li><strong>0 - 10:</strong> RuBeer Beginner</li>
+                <li><strong>11 - 50:</strong> RuBeer Apprentice</li>
+                <li><strong>51 - 250:</strong> Advanced RuBeerer</li>
+                <li><strong>251 - 1000:</strong> Master RuBeerer</li>
+                <li><strong>1000+:</strong> RuBeer Extraordinaire</li>
+              </ul>
+              <button 
+                onClick={() => setShowLegend(false)}
+                style={{ marginTop: '15px', width: '100%', padding: '5px', backgroundColor: '#333', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
+              >
+                Close
+              </button>
+            </div>
+          )}
+        </div>
+        {/* --- END TITLE & LEGEND --- */}
+
         <div style={{ display: 'flex', gap: '2rem' }}>
           <div>
             <p style={{ margin: 0, fontSize: '1.8rem', fontWeight: 'bold', color: '#E67E22' }}>
