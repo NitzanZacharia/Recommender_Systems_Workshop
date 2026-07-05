@@ -9,8 +9,9 @@ import cold_start
 import pandas as pd
 import numpy as np
 import os
-import google.generativeai as genai
 from dotenv import load_dotenv
+from google import genai
+from google.genai import types
 from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from sklearn.metrics.pairwise import cosine_similarity
@@ -35,6 +36,7 @@ HYBRID_MULTIPLIER = 3
 RERANK_MULTIPLIER = 2
 DEFAULT_RECOMMENDATION_NUM = 10
 MIN_FOLDIN_RATINGS = 5
+ADVENTURE_MIN_POOL_MULTIPLIER = 5  # mid_range must be this many times rec_num for real sampling variety
 
 @asynccontextmanager
 async def app_lifespan(app: FastAPI):
@@ -365,7 +367,9 @@ async def get_adventurous_recommendations(user_id: str, rec_num: int = DEFAULT_R
     # Filter to the 0.80–0.95 score band for genuine taste divergence
     mid_range = large_pool[(large_pool >= 0.80) & (large_pool <= 0.95)]
 
-    if mid_range.empty:
+    # If the band is too small relative to rec_num, sampling degenerates into
+    # returning the entire (deterministic) band every time — widen the pool instead.
+    if len(mid_range) < rec_num * ADVENTURE_MIN_POOL_MULTIPLIER:
         mid_range = large_pool.iloc[50:]
 
     sample_size = min(rec_num, len(mid_range))
@@ -394,7 +398,8 @@ async def get_anti_recommendations(user_id: str, rec_num: int = DEFAULT_RECOMMEN
     }
 
 load_dotenv()  # Load environment variables from .env file
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+_sivan_client = genai.Client() if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") else None
+
 @app.post("/api/chat")
 async def chat_with_sivan(payload: dict = Body(...)):
     """
@@ -443,17 +448,18 @@ async def chat_with_sivan(payload: dict = Body(...)):
     # STEP 3: THE GENERATION (Calling the LLM)
     # ---------------------------------------------------------
     try:
-        # Initialize the model and pass Sivan's persona as the system instruction
-        model = genai.GenerativeModel(
-            model_name="gemini-2.5-flash",
-            system_instruction=system_prompt
-        )
-        
+        if _sivan_client is None:
+            raise RuntimeError("Gemini API key is not configured.")
+
         # Generate the response asynchronously so we don't block the FastAPI server
-        response = await model.generate_content_async(user_message)
-        
+        response = await _sivan_client.aio.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=user_message,
+            config=types.GenerateContentConfig(system_instruction=system_prompt),
+        )
+
         return {"reply": response.text}
-        
+
     except Exception as e:
         print(f"Gemini Error: {e}")
         return {"reply": f"I heard you say '{user_message}', but my connection to Gemini is currently down! Tell the devs to check my API key."}
