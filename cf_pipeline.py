@@ -345,10 +345,12 @@ def cf_recommend(user_id: str, n: int = 10, exclude_ids=None, ascending: bool = 
     predicted_row = predict_user_row(user_idx)
 
     rated_cols = R_sparse.getrow(user_idx).indices
-    scores = pd.Series(predicted_row, index=beer_ids).drop(index=beer_ids[rated_cols])
+    scores = pd.Series(predicted_row, index=beer_ids)
 
     if specific:
         return scores[specific]
+
+    scores = scores.drop(index=beer_ids[rated_cols])
 
     if exclude_ids:
         scores = scores.drop(index=[bid for bid in exclude_ids if bid in scores.index], errors='ignore')

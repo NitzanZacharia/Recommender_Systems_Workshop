@@ -157,7 +157,7 @@ async def get_group_recommend(group: str = "", rec_num: int = DEFAULT_RECOMMENDA
     # Parse the comma-separated string into a clean list of user IDs
     user_ids = [user_id.strip() for user_id in group.split(",")]
 
-    if not user_ids:
+    if user_ids == ['']:
         return "No users provided"
 
     try:
@@ -318,7 +318,7 @@ async def get_recommendation(user_id: str, rec_num: int = DEFAULT_RECOMMENDATION
         }
 
 @app.get("/recommendations/{user_id}/beer/{beer_id}")
-async def get_recommendation(user_id: str, beer_id:str):
+async def get_beer_compatability(user_id: str, beer_id:str):
     """
     Return beer compatability score for the user
 
@@ -329,6 +329,7 @@ async def get_recommendation(user_id: str, beer_id:str):
     Returns:
     - Predicted compatability score
     """
+    beer_id = _cast_beer_id_for_pipeline(beer_id)
 
     try:
         cf_score = cf.cf_recommend(user_id, specific = beer_id)
@@ -340,13 +341,13 @@ async def get_recommendation(user_id: str, beer_id:str):
     except ValueError:
         cb_score = None
 
-    if cf_score and cb_score:
+    if cf_score is not None and cb_score is not None:
         # Compute per-user CF weight: more ratings → more trust in CF signal
         historical_count = cf.R_sparse.getrow(cf.user_id_to_index[user_id]).nnz if user_id in cf.user_id_to_index else 0
         cf_weight = get_cf_weight(historical_count)
 
         beer_score = (cf_weight * cf_score) + ((1 - cf_weight) * cb_score)
-    elif cf_score or cb_score:
+    elif cf_score is not None or cb_score is not None:
         beer_score = cf_score if cf_score is not None else cb_score
     else:
         raise HTTPException(status_code=404, detail="Invalid User or Beer ID")
