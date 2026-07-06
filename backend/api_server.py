@@ -892,8 +892,7 @@ def get_user_anti_candidates(user_id: str, candidate_num: int) -> pd.Series:
     except ValueError:
         pass
 
-    # New-user fallback: build anti-candidates directly from session ratings (CB only --
-    # cf_recommend_new_user doesn't support an ascending/worst-match mode).
+    # New-user fallback: build anti-candidates directly from session ratings.
     if cf_candidates is None and cb_candidates is None and session_ratings:
         try:
             cb_candidates = cb.cb_recommend_from_ratings(
@@ -901,6 +900,13 @@ def get_user_anti_candidates(user_id: str, candidate_num: int) -> pd.Series:
             )
         except ValueError:
             pass
+        if len(session_ratings) >= MIN_FOLDIN_RATINGS:
+            try:
+                cf_candidates = cf.cf_recommend_new_user(
+                    session_ratings, expanded_candidate_num, exclude_ids=exclude, ascending=True
+                )
+            except ValueError:
+                pass
 
     if cf_candidates is None and cb_candidates is None:
         raise ValueError(f"User '{user_id}' not found in either recommendation pipeline")
