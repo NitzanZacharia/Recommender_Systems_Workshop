@@ -354,7 +354,7 @@ async def get_beer_compatability(user_id: str, beer_id:str):
         raise HTTPException(status_code=404, detail="Invalid User or Beer ID")
 
     return {
-            beer_id: beer_score,
+            str(beer_id): beer_score,
         }
 
 @app.get("/recent/{user_id}")
