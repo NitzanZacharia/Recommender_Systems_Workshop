@@ -21,7 +21,6 @@ const Stavassistant = () => {
     setInputMessage('');
 
     try {
-      // 2. Send the text to your Python backend
       const response = await fetch('http://localhost:8000/api/chat', {
         method: 'POST',
         headers: {
@@ -32,7 +31,6 @@ const Stavassistant = () => {
 
       const data = await response.json();
 
-      // 3. Display Stav's real response from the server
       setMessages(prev => [...prev, { sender: 'Stav', text: data.reply }]);
       
     } catch (error) {
@@ -55,15 +53,11 @@ const Stavassistant = () => {
             </div>
           </div>
           
-          {/* 
-          */}
           <div style={{
             ...styles.chatBodyWrapper,
             backgroundImage: `url(${StavAvatar})`
           }}>
             
-            {/* 
-            */}
             <div style={styles.messageList}>
               {messages.map((msg, index) => (
                 <div key={index} style={{
@@ -93,9 +87,7 @@ const Stavassistant = () => {
         </div>
       ) : (
         <div style={styles.closedContainer}>
-          <div onClick={toggleChat} style={styles.tooltipBubble}>
-            Hey! I'm Stav, your AI Assistant. Ask me anything about RuBeer!
-          </div>
+          {/* The tooltip bubble was completely removed from here */}
           <button onClick={toggleChat} style={styles.avatarButton}>
             <img 
               src={StavAvatar} 
@@ -123,19 +115,7 @@ const styles = {
     alignItems: 'flex-end',
     gap: '15px',
   },
-  tooltipBubble: {
-    backgroundColor: '#000',
-    color: '#ff9800',
-    padding: '15px 20px',
-    borderRadius: '15px 15px 0px 15px',
-    maxWidth: '240px',
-    border: '1px solid #ff9800',
-    cursor: 'pointer',
-    boxShadow: '0 4px 10px rgba(0,0,0,0.5)',
-    fontSize: '14px',
-    lineHeight: '1.5',
-    marginBottom: '10px',
-  },
+
   avatarButton: {
     width: '75px',
     height: '75px',

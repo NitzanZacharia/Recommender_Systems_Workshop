@@ -1094,9 +1094,7 @@ const BuildSixPackPage = ({ allBeers = [], onCardClick }) => {
   const [packCount, setPackCount] = useState(1);
   const [partyMembers, setPartyMembers] = useState(['Me']);
   const [selectedFriend, setSelectedFriend] = useState('');
-  
   const friendDatabase = ["Alex (Lager Lover)", "Sarah (Hops Fanatic)", "David (Stout Guy)", "Emily (Sour Queen)"];
-
   const fallbackBeers = [
     { id: 'f1', name: 'Cosmic IPA',     style: 'IPA',       abv: 6.5, image_url: getBeerImage('IPA', 'f1') },
     { id: 'f2', name: 'Midnight Stout', style: 'Stout',     abv: 8.0, image_url: getBeerImage('Stout', 'f2') },
@@ -1105,6 +1103,13 @@ const BuildSixPackPage = ({ allBeers = [], onCardClick }) => {
     { id: 'f5', name: 'Amber Echo',     style: 'Amber Ale', abv: 5.5, image_url: getBeerImage('Amber Ale', 'f5') },
     { id: 'f6', name: 'Crisp Cider',    style: 'Cider',     abv: 4.5, image_url: getBeerImage('Cider', 'f6') },
   ];
+  const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
+  const [newListName, setNewListName] = useState('');
+  const [newListSection, setNewListSection] = useState('');
+  const [showSectionDropdown, setShowSectionDropdown] = useState(false);
+  const [existingSections, setExistingSections] = useState([
+    "Hoppy & Bitter", "BBQ Pairings", "Winter Stouts", "Gifts for Friends", "Generated 6-Packs"
+  ]);
 
   const handleAddFriend = (e) => {
     const friend = e.target.value;
@@ -1139,6 +1144,34 @@ const BuildSixPackPage = ({ allBeers = [], onCardClick }) => {
     }, 1500);
   };
 
+  const handleSaveListSubmit = () => {
+    if (!newListName.trim()) return;
+    const finalSection = newListSection.trim() || "Generated 6-Packs";
+    
+    if (!existingSections.includes(finalSection)) {
+      setExistingSections([...existingSections, finalSection]);
+    }
+
+    const newList = {
+      id: `m-${Date.now()}`,
+      title: newListName.trim(),
+      beers: generatedPack ? generatedPack.map(b => b.id) : [], 
+      icon: '📦', 
+      color: '#E67E22',
+      section: finalSection
+    };
+
+    if (onSaveList) {
+      onSaveList(newList);
+    } else {
+      console.log("List ready to save! Send this to your global state:", newList);
+    }
+
+    setIsSaveModalOpen(false);
+    setNewListName('');
+    setNewListSection('');
+  };
+
   return (
     <div style={{ position: 'relative' }}>
       <style>{`
@@ -1160,6 +1193,11 @@ const BuildSixPackPage = ({ allBeers = [], onCardClick }) => {
         .bottle-slot:hover {
           transform: scale(1.05);
         }
+        .modal-backdrop {
+          position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+          background-color: rgba(0, 0, 0, 0.85); z-index: 999999;
+          display: flex; justify-content: center; align-items: center;
+        }
       `}</style>
 
       <div style={{ marginBottom: '2rem' }}>
@@ -1175,13 +1213,7 @@ const BuildSixPackPage = ({ allBeers = [], onCardClick }) => {
           
           {Array.from({ length: packCount }).map((_, packIndex) => (
             <div key={packIndex} style={{ 
-              backgroundColor: '#1a1a1a', 
-              borderRadius: '12px', 
-              padding: '2rem', 
-              border: '2px solid #333',
-              position: 'relative',
-              display: 'flex',
-              flexDirection: 'column'
+              backgroundColor: '#1a1a1a', borderRadius: '12px', padding: '2rem', border: '2px solid #333', position: 'relative', display: 'flex', flexDirection: 'column'
             }}>
               
               {packCount > 1 && (
@@ -1208,7 +1240,7 @@ const BuildSixPackPage = ({ allBeers = [], onCardClick }) => {
                       {beer && !isGenerating && (
                         <div 
                           className="bottle-slot" 
-                          onClick={() => onCardClick(beer)} // <-- Triggers the modal!
+                          onClick={() => onCardClick && onCardClick(beer)} 
                           style={{ animationDelay: `${absoluteIndex * 0.1}s`, width: '100%', height: '100%', display: 'flex', flexDirection: 'column', cursor: 'pointer' }}
                         >
                           <img src={beer.image_url} alt={beer.name} style={{ width: '100%', height: '110px', objectFit: 'cover' }} />
@@ -1238,13 +1270,18 @@ const BuildSixPackPage = ({ allBeers = [], onCardClick }) => {
                 {packCount > 1 && ` Expanded to ${packCount * 6} unique recommendations for the group.`}
               </p>
               <div style={{ marginTop: '1.5rem', display: 'flex', gap: '1rem' }}>
-                <button style={{ backgroundColor: '#E67E22', color: '#fff', border: 'none', padding: '0.8rem 1.5rem', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>Save to My Lists</button>
                 <button 
-                onClick={() => setShowDeliveryModal(true)}
-                style={{ backgroundColor: 'transparent', color: '#E67E22', border: '1px solid #E67E22', padding: '0.8rem 1.5rem', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}
-              >
-                Order Delivery
-              </button>
+                  onClick={() => setIsSaveModalOpen(true)}
+                  style={{ backgroundColor: '#E67E22', color: '#fff', border: 'none', padding: '0.8rem 1.5rem', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}
+                >
+                  Save to My Lists
+                </button>
+                <button 
+                  onClick={() => setShowDeliveryModal(true)}
+                  style={{ backgroundColor: 'transparent', color: '#E67E22', border: '1px solid #E67E22', padding: '0.8rem 1.5rem', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}
+                >
+                  Order Delivery
+                </button>
               </div>
             </div>
           )}
@@ -1296,57 +1333,92 @@ const BuildSixPackPage = ({ allBeers = [], onCardClick }) => {
               onClick={handleGenerate}
               disabled={isGenerating}
               style={{ 
-                width: '100%', 
-                padding: '1.2rem', 
-                backgroundColor: isGenerating ? '#333' : '#E67E22', 
-                color: isGenerating ? '#888' : '#fff', 
-                border: 'none', 
-                borderRadius: '8px', 
-                fontWeight: 'bold', 
-                fontSize: '1.2rem', 
-                cursor: isGenerating ? 'wait' : 'pointer',
-                transition: 'background-color 0.2s',
-                animation: isGenerating ? 'pulseGlow 1.5s infinite' : 'none'
+                width: '100%', padding: '1.2rem', backgroundColor: isGenerating ? '#333' : '#E67E22', color: isGenerating ? '#888' : '#fff', border: 'none', borderRadius: '8px', fontWeight: 'bold', fontSize: '1.2rem', cursor: isGenerating ? 'wait' : 'pointer', transition: 'background-color 0.2s', animation: isGenerating ? 'pulseGlow 1.5s infinite' : 'none'
               }}
             >
               {isGenerating ? 'Crunching Preferences...' : 'Generate Selection'}
             </button>
 
-            {showDeliveryModal && (
-  <div className="delivery-modal-container">
-    <div 
-      style={{ 
-        backgroundColor: '#1a1a1a', 
-        border: '2px solid #E67E22', 
-        padding: '2rem', 
-        borderRadius: '12px', 
-        textAlign: 'center',
-        boxShadow: '0 10px 25px rgba(0,0,0,0.5)'
-      }}
-    >
-      <h2 style={{ color: '#fff', marginTop: 0 }}>Order Success!</h2>
-      <p style={{ color: '#aaa' }}>Added 6 pack to cart in your FoodFellas account</p>
-      
-      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '1rem', marginTop: '1.5rem' }}>
-        <img src={logo} alt="RuBeer" style={{ height: '65px' }} />
-        <span style={{ color: '#E67E22', fontSize: '1.2rem' }}>×</span>
-        <img src={FoodFellas} alt="FoodFellas" style={{ height: '65px' }} />
-      </div>
-
-      <button 
-        onClick={() => setShowDeliveryModal(false)}
-        style={{ marginTop: '2rem', width: '100%', padding: '0.8rem', backgroundColor: '#E67E22', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}
-      >
-        Close
-      </button>
-    </div>
-  </div>
-)}
-
           </div>
         </div>
-        
       </div>
+
+      {showDeliveryModal && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.85)',
+          zIndex: 999999, 
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center'
+        }}>
+          <div 
+            style={{ 
+              backgroundColor: '#1a1a1a', 
+              border: '2px solid #E67E22', 
+              padding: '2.5rem', 
+              borderRadius: '12px', 
+              textAlign: 'center',
+              boxShadow: '0 10px 40px rgba(0,0,0,0.8)',
+              minWidth: '350px',
+              position: 'relative',
+              zIndex: 1000000 
+            }}
+          >
+            <h2 style={{ color: '#fff', marginTop: 0 }}>Order Success!</h2>
+            <p style={{ color: '#aaa' }}>Added 6 pack to cart in your FoodFellas account</p>
+            
+            <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '1.5rem', marginTop: '2rem' }}>
+              <img src={logo} alt="RuBeer" style={{ height: '65px' }} />
+              <span style={{ color: '#E67E22', fontSize: '1.5rem', fontWeight: 'bold' }}>×</span>
+              <img src={FoodFellas} alt="FoodFellas" style={{ height: '65px' }} />
+            </div>
+
+            <button 
+              onClick={() => setShowDeliveryModal(false)}
+              style={{ marginTop: '2.5rem', width: '100%', padding: '1rem', backgroundColor: '#E67E22', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '1.1rem' }}
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+      
+      {isSaveModalOpen && (
+        <div className="modal-backdrop" onClick={() => setIsSaveModalOpen(false)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ backgroundColor: '#1a1a1a', border: '2px solid #E67E22', padding: '2rem', maxWidth: '400px', width: '90%', borderRadius: '12px', display: 'flex', flexDirection: 'column', gap: '1.5rem', boxSizing: 'border-box', overflow: 'visible', zIndex: 1000000 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h2 style={{ margin: 0, color: '#E67E22', fontSize: '1.5rem' }}>Save 6-Pack</h2>
+              <button onClick={() => setIsSaveModalOpen(false)} style={{ background: 'none', border: 'none', color: '#E67E22', fontSize: '2rem', cursor: 'pointer', lineHeight: 1, padding: 0 }}>&times;</button>
+            </div>
+            
+            <p style={{ color: '#aaa', margin: 0 }}>Save these {generatedPack?.length} beers to a new custom list.</p>
+
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              <label style={{ marginBottom: '0.5rem', fontWeight: 'bold', color: '#E67E22' }}>List Name:</label>
+              <input type="text" value={newListName} onChange={(e) => setNewListName(e.target.value)} placeholder="e.g., Weekend Bangers" style={{ width: '100%', padding: '0.8rem', borderRadius: '6px', border: 'none', outline: 'none', backgroundColor: '#fff', color: '#000', fontSize: '1rem', boxSizing: 'border-box' }} />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              <label style={{ marginBottom: '0.5rem', fontWeight: 'bold', color: '#E67E22' }}>Section:</label>
+              <div style={{ position: 'relative', width: '100%' }}>
+                <input type="text" value={newListSection} onChange={(e) => setNewListSection(e.target.value)} onFocus={() => setShowSectionDropdown(true)} onBlur={() => setTimeout(() => setShowSectionDropdown(false), 200)} placeholder="Generated 6-Packs" style={{ width: '100%', padding: '0.8rem', borderRadius: '6px', border: 'none', outline: 'none', backgroundColor: '#fff', color: '#000', fontSize: '1rem', boxSizing: 'border-box' }} />
+                {showSectionDropdown && (
+                  <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, marginTop: '4px', backgroundColor: '#2a2a2a', border: '1px solid #E67E22', borderRadius: '6px', zIndex: 9999, boxShadow: '0 4px 12px rgba(0,0,0,0.5)', overflow: 'hidden' }}>
+                    {existingSections.map((section, idx) => (
+                      <div key={idx} onMouseDown={(e) => { e.preventDefault(); setNewListSection(section); setShowSectionDropdown(false); }} style={{ padding: '0.8rem 1rem', color: '#fff', cursor: 'pointer', borderBottom: idx === existingSections.length - 1 ? 'none' : '1px solid #444', transition: 'background-color 0.2s' }} onMouseEnter={(e) => e.target.style.backgroundColor = '#E67E22'} onMouseLeave={(e) => e.target.style.backgroundColor = 'transparent'}>{section}</div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+            <button onClick={handleSaveListSubmit} disabled={!newListName.trim()} style={{ width: '100%', padding: '1rem', border: 'none', borderRadius: '6px', backgroundColor: newListName.trim() ? '#E67E22' : '#333', color: newListName.trim() ? '#fff' : '#666', fontWeight: 'bold', fontSize: '1.1rem', cursor: newListName.trim() ? 'pointer' : 'not-allowed', transition: 'background-color 0.2s', marginTop: '0.5rem', boxSizing: 'border-box' }}>Save List</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
